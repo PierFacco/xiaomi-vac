@@ -123,6 +123,14 @@ def has_ijai_grid(brand: str) -> bool:
     return brand == "ijai"
 
 
+def has_json_grid(brand: str) -> bool:
+    """True only for the xiaomi JSON-map family: its decrypted payload is the
+    JSON object whose base64+zlib `map_data` is a labelled occupancy grid
+    (`map_vector.extract_json_grid`), the second source of true room contours.
+    `parser_key()` already routes only the JSON-map profiles to "xiaomi"."""
+    return brand == "xiaomi"
+
+
 def overlay_units_per_metre(brand: str) -> float:
     """Divisor converting this brand's overlay coordinates to metres.
 

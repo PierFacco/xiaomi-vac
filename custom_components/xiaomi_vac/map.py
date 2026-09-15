@@ -20,6 +20,7 @@ from .map_parsers import (
     dreame_decrypt_cloud_blob,
     dreame_extract_enckey,
     has_ijai_grid,
+    has_json_grid,
     make_parser,
     map_url_endpoint,
     overlay_units_per_metre,
@@ -139,6 +140,9 @@ class MapFetcher:
         )
         self._endpoint = map_url_endpoint(self._brand)
         self._ijai_grid = has_ijai_grid(self._brand)
+        # True for the xiaomi JSON-map family: room contours are traced from
+        # the labelled pixel grid inside its decrypted JSON payload.
+        self._json_grid = has_json_grid(self._brand)
         # Divisor turning this brand's overlay coords into the metres the card
         # contract declares (1.0 for every brand but the xiaomi JSON family).
         self._overlay_units = overlay_units_per_metre(self._brand)
@@ -223,6 +227,7 @@ class MapFetcher:
             md = self._parser.parse(unpacked)
             vector = map_vector.vector_map(
                 md, unpacked, ijai_grid=self._ijai_grid,
+                json_grid=self._json_grid,
                 units_per_metre=self._overlay_units,
             )
         except Exception as ex:  # noqa: BLE001

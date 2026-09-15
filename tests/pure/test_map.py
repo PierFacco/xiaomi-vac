@@ -3,6 +3,8 @@
 No homeassistant import — runs on native Windows. Covers:
   - the ijai labelled-grid vector contract (`map_vector.extract_grid` /
     `vector_map`), the part that's brand-specific;
+  - the xiaomi JSON-map grid contract (`map_vector.extract_json_grid`), the
+    second source of true room contours;
   - the brand dispatch (`map_parsers`) that picks the right parser + unpack
     inputs + grid flag per brand.
 
@@ -14,6 +16,9 @@ end to end without secrets. Per-brand fixtures get added as real blobs appear.
 """
 from __future__ import annotations
 
+import base64
+import json
+import zlib
 from types import SimpleNamespace
 
 import pytest
@@ -191,6 +196,168 @@ def test_vector_map_non_ijai_empty_grid():
     # overlays still come through so the card can draw on the PNG
     assert out["charger"] == {"x": 0.5, "y": -0.5}
     assert out["rooms"][0]["name"] == "Kitchen"
+
+
+# --- xiaomi JSON-map grid ------------------------------------------------
+# Built from a hand-written 6x5 ASCII grid, not a real floor plan: the live
+# ov71gl dump that proved this decode is a private home layout and stays out
+# of the repo, exactly like the ijai blob above.
+def _json_payload(rows, *, room_info=None, resolution=50, origin=(-100, -200)):
+    """A reduced xiaomi JSON map payload built from an ASCII grid.
+
+    `rows[0]` is grid row 0 == `origin_y`, i.e. the row index grows NORTH —
+    the convention the real payload uses. Each character is a raw JSON cell
+    value: "0" outside, "1" floor, digits 3-9 room grid_ids, "w" a wall.
+    """
+    w, h = len(rows[0]), len(rows)
+    cells = bytes(255 if ch == "w" else int(ch) for row in rows for ch in row)
+    payload = {
+        "width": w, "height": h, "resolution": resolution,
+        "origin_x": origin[0], "origin_y": origin[1],
+        "map_data": base64.b64encode(zlib.compress(cells)).decode(),
+    }
+    if room_info is not None:
+        payload["map_room_info"] = [{"grid_id": g, "room_id": r}
+                                    for g, r in room_info.items()]
+    return json.dumps(payload)
+
+
+# room 3 is an L of 5 cells, room 4 a 2x2 block
+_JSON_ROWS = (
+    "000000",
+    "033000",
+    "033440",
+    "003440",
+    "000000",
+)
+
+
+def _ring_area(ring):
+    """Polygon area of a traced ring, in whole cells (shoelace)."""
+    s = 0.0
+    for i, (x0, y0) in enumerate(ring):
+        x1, y1 = ring[(i + 1) % len(ring)]
+        s += x0 * y1 - x1 * y0
+    return abs(s) / 2
+
+
+def test_extract_json_grid_traces_rooms_from_the_pixel_grid():
+    """Contours come from the base64+zlib `map_data` cells, not from a bbox."""
+    out = map_vector.extract_json_grid(_json_payload(_JSON_ROWS),
+                                       units_per_metre=1000.0)
+
+    chains = {c["id"]: c["rings"] for c in out["room_chains"]}
+    assert set(chains) == {3, 4}
+    # An L of 5 cells: its bounding box would be 6, so the traced area proves
+    # the outline follows the real cells.
+    assert [_ring_area(r) for r in chains[3]] == [5.0]
+    assert [_ring_area(r) for r in chains[4]] == [4.0]
+    # millimetre payload -> the metre contract, same divisor as the overlays
+    assert out["resolution"] == 0.05
+    assert out["bounds"]["minX"] == pytest.approx(-0.1)
+    assert out["bounds"]["minY"] == pytest.approx(-0.2)
+    assert out["bounds"]["maxX"] == pytest.approx(0.2)
+    assert out["bounds"]["maxY"] == pytest.approx(0.05)
+
+
+def test_extract_json_grid_chains_land_on_the_room_bbox():
+    """Chain vertices are grid-line (col,row) pairs the card turns into metres
+    as `minX + col * resolution`; that must reproduce the room's own extent."""
+    out = map_vector.extract_json_grid(_json_payload(_JSON_ROWS),
+                                       units_per_metre=1000.0)
+    b, res = out["bounds"], out["resolution"]
+    room4 = next(c for c in out["room_chains"] if c["id"] == 4)
+    xs = [b["minX"] + c * res for ring in room4["rings"] for c, _ in ring]
+    ys = [b["minY"] + r * res for ring in room4["rings"] for _, r in ring]
+    # cells (3,2)..(4,3): the outline runs along grid lines 3..5 and 2..4
+    assert min(xs) == pytest.approx(0.05)
+    assert max(xs) == pytest.approx(0.15)
+    assert min(ys) == pytest.approx(-0.1)
+    assert max(ys) == pytest.approx(0.0)
+
+
+def test_extract_json_grid_emits_the_raster_only_for_card_room_ids():
+    """The card reads raster cells with room_min..room_max hard-coded and then
+    looks the label up in `rooms` by id, so the grid may ship only when the
+    real room ids are inside that band. ov71gl's 3-7 are not: chains only."""
+    bare = map_vector.extract_json_grid(_json_payload(_JSON_ROWS))
+    assert bare["room_chains"]            # contours either way
+    assert bare["grid_rle"] == []
+    assert bare["size"] is None
+
+    mapped = map_vector.extract_json_grid(
+        _json_payload(_JSON_ROWS, room_info={3: 11, 4: 12}))
+    assert {c["id"] for c in mapped["room_chains"]} == {11, 12}
+    assert mapped["size"] == {"x": 6, "y": 5}
+    grid = _expand_rle(mapped["grid_rle"])
+    assert len(grid) == 30
+    # cells carry the ROOM id (what `rooms[].id` and clean_segment use), not
+    # the raw grid_id
+    assert grid[1 * 6 + 1] == 11
+    assert grid[2 * 6 + 3] == 12
+
+
+def test_extract_json_grid_normalises_cells_to_the_legend():
+    """JSON alphabet (0 / 1-2 / 3-63 / >63) -> the legend the card shares."""
+    out = map_vector.extract_json_grid(
+        _json_payload(("01w0", "0330", "0330", "0000"), room_info={3: 10}))
+
+    grid = _expand_rle(out["grid_rle"])
+    assert grid[0] == out["legend"]["outside"]
+    assert grid[1] == out["legend"]["floor"]
+    assert grid[2] == out["legend"]["wall"]
+    assert grid[1 * 4 + 1] == 10
+
+
+@pytest.mark.parametrize("payload", [
+    "not json at all",
+    json.dumps({"width": 4, "height": 4}),                         # no map_data
+    json.dumps({"width": 4, "height": 4, "map_data": "!!"}),       # not b64+zlib
+    json.dumps({"width": 4, "height": 4,                           # short buffer
+                "map_data": base64.b64encode(zlib.compress(b"\x00")).decode()}),
+    json.dumps({"width": 4, "height": 4,                           # no room cells
+                "map_data": base64.b64encode(zlib.compress(bytes(16))).decode()}),
+])
+def test_extract_json_grid_falls_back_to_the_empty_contract(payload):
+    """A cloud payload is external input: every malformed shape degrades to the
+    overlays-only contract instead of killing the whole map parse."""
+    out = map_vector.extract_json_grid(payload)
+
+    assert out["room_chains"] == []
+    assert out["grid_rle"] == []
+    assert out["size"] is None
+    assert out["bounds"] is None
+
+
+def test_vector_map_xiaomi_json_grid_has_room_chains():
+    """The ov71gl path: contours from the payload grid, overlays still metres."""
+    out = map_vector.vector_map(
+        _fake_md_mm(), _json_payload(_JSON_ROWS), ijai_grid=False,
+        json_grid=True, units_per_metre=1000.0)
+
+    assert {c["id"] for c in out["room_chains"]} == {3, 4}
+    assert out["resolution"] == 0.05
+    assert out["charger"] == {"x": 0.331, "y": 0.017}
+    # a blob-embedded map id stays ijai-only: the coordinator trusts it as
+    # ground truth when resolving which physical map a cycle belongs to
+    assert out["map_id"] is None
+
+
+def test_vector_map_json_grid_is_off_by_default():
+    """Brands without a JSON grid keep the overlays-only contract untouched."""
+    out = map_vector.vector_map(_fake_md_mm(), _json_payload(_JSON_ROWS),
+                                ijai_grid=False, units_per_metre=1000.0)
+
+    assert out["room_chains"] == []
+    assert out["bounds"] is None
+    assert out["resolution"] is None
+
+
+def test_has_json_grid_only_xiaomi():
+    """Only the xiaomi JSON-map family carries a decodable pixel grid."""
+    assert map_parsers.has_json_grid("xiaomi") is True
+    for brand in ("ijai", "dreame", "viomi", "roidmi"):
+        assert map_parsers.has_json_grid(brand) is False
 
 
 # --- brand dispatch ------------------------------------------------------
