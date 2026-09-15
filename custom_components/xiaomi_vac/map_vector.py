@@ -4,6 +4,7 @@ See docs/dev/map-pipeline.md for the per-brand map pipeline details.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import vacuum_map_parser_ijai.RobotMap_pb2 as RobotMap
@@ -29,11 +30,11 @@ def _rle(grid: bytes) -> list[int]:
     return out
 
 
-def _pt(p: Any) -> dict[str, float]:
-    d = {"x": p.x, "y": p.y}
+def _pt(p: Any, to_m: Callable[[Any], Any] = lambda v: v) -> dict[str, float]:
+    d = {"x": to_m(p.x), "y": to_m(p.y)}
     a = getattr(p, "phi", None)
     if a is not None:
-        d["a"] = a
+        d["a"] = a  # heading in degrees -- never a length, never scaled
     return d
 
 
@@ -250,39 +251,54 @@ def _empty_grid() -> dict[str, Any]:
     }
 
 
-def vector_map(md: Any, unpacked: bytes, *, ijai_grid: bool = True) -> dict[str, Any]:
+def vector_map(md: Any, unpacked: bytes, *, ijai_grid: bool = True,
+               units_per_metre: float = 1.0) -> dict[str, Any]:
     """Assemble the card contract: grid (this module) + vector overlays (md).
 
-    `md` is the parsed vacuum_map_parser_base.MapData. All overlay coords are in
-    metres. `ijai_grid` is True only when `unpacked` is an ijai `RobotMap`
-    protobuf (the sole source of the crisp labelled grid); other brands pass
-    False and get the overlays-only contract.
+    `md` is the parsed vacuum_map_parser_base.MapData. All overlay coords are
+    emitted in metres. `ijai_grid` is True only when `unpacked` is an ijai
+    `RobotMap` protobuf (the sole source of the crisp labelled grid); other
+    brands pass False and get the overlays-only contract.
+
+    `units_per_metre` is the divisor turning this brand's parser units into
+    metres -- see `map_parsers.overlay_units_per_metre`. It is 1.0 for every
+    brand that already reports metres and 1000.0 for the xiaomi JSON-map
+    family, whose parser reports millimetres. Without it the card, which draws
+    in metre space with absolute label and marker sizes, renders those 1000x
+    too small to see.
     """
     out = extract_grid(unpacked) if ijai_grid else _empty_grid()
 
+    def to_m(value: Any) -> Any:
+        """Parser unit -> metre. Passes None through: `Room.pos_x`/`pos_y` are
+        optional (`float | None`) and stay absent rather than becoming 0.0."""
+        return value if value is None else value / units_per_metre
+
     if md.path is not None:
-        out["path"] = [[p.x, p.y] for sub in md.path.path for p in sub]
+        out["path"] = [[to_m(p.x), to_m(p.y)] for sub in md.path.path for p in sub]
     if md.charger is not None:
-        out["charger"] = _pt(md.charger)
+        out["charger"] = _pt(md.charger, to_m)
     if md.vacuum_position is not None:
-        out["vacuum"] = _pt(md.vacuum_position)
+        out["vacuum"] = _pt(md.vacuum_position, to_m)
     if md.goto is not None:
-        out["goto"] = _pt(md.goto)
+        out["goto"] = _pt(md.goto, to_m)
 
     out["rooms"] = [
         {
             "id": rid,
             "name": r.name,
-            "cx": r.pos_x,
-            "cy": r.pos_y,
-            "bbox": [r.x0, r.y0, r.x1, r.y1],
+            "cx": to_m(r.pos_x),
+            "cy": to_m(r.pos_y),
+            "bbox": [to_m(r.x0), to_m(r.y0), to_m(r.x1), to_m(r.y1)],
         }
         for rid, r in (md.rooms or {}).items()
     ]
-    out["walls"] = [[w.x0, w.y0, w.x1, w.y1] for w in (md.walls or [])]
-    out["no_go"] = [a.as_list() for a in (md.no_go_areas or [])]
-    out["no_mop"] = [a.as_list() for a in (md.no_mopping_areas or [])]
-    out["zones"] = [[z.x0, z.y0, z.x1, z.y1] for z in (md.zones or [])]
+    out["walls"] = [[to_m(w.x0), to_m(w.y0), to_m(w.x1), to_m(w.y1)]
+                    for w in (md.walls or [])]
+    out["no_go"] = [[to_m(v) for v in a.as_list()] for a in (md.no_go_areas or [])]
+    out["no_mop"] = [[to_m(v) for v in a.as_list()] for a in (md.no_mopping_areas or [])]
+    out["zones"] = [[to_m(z.x0), to_m(z.y0), to_m(z.x1), to_m(z.y1)]
+                    for z in (md.zones or [])]
     out["vacuum_room"] = md.vacuum_room
     out["vacuum_room_name"] = md.vacuum_room_name
     return out

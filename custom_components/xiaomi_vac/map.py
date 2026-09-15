@@ -22,6 +22,7 @@ from .map_parsers import (
     has_ijai_grid,
     make_parser,
     map_url_endpoint,
+    overlay_units_per_metre,
     unpack_kwargs,
 )
 
@@ -138,6 +139,9 @@ class MapFetcher:
         )
         self._endpoint = map_url_endpoint(self._brand)
         self._ijai_grid = has_ijai_grid(self._brand)
+        # Divisor turning this brand's overlay coords into the metres the card
+        # contract declares (1.0 for every brand but the xiaomi JSON family).
+        self._overlay_units = overlay_units_per_metre(self._brand)
         # Dreame cloud enckey polled from siid=6/piid=3 on first fetch; None for
         # unencrypted models or until the property is successfully read.
         self._enckey: str | None = None
@@ -217,7 +221,10 @@ class MapFetcher:
             return None
         try:
             md = self._parser.parse(unpacked)
-            vector = map_vector.vector_map(md, unpacked, ijai_grid=self._ijai_grid)
+            vector = map_vector.vector_map(
+                md, unpacked, ijai_grid=self._ijai_grid,
+                units_per_metre=self._overlay_units,
+            )
         except Exception as ex:  # noqa: BLE001
             # Decrypted fine but the parser rejected the frame (corrupt or
             # unexpected layout). The key material is good — keep the enckey.

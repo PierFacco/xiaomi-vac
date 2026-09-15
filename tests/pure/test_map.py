@@ -114,6 +114,73 @@ def test_vector_map_ijai_has_grid():
     assert out["rooms"][0]["name"] == "Kitchen"
 
 
+def _fake_md_mm():
+    """MapData as `vacuum_map_parser_xiaomi` reports it: every length in mm.
+
+    Mirrors the live xiaomi.vacuum.ov71gl payload (S40 Pro): rooms metres away
+    from the origin expressed in millimetres, dock near the origin.
+    """
+    room = SimpleNamespace(name="Bedroom", pos_x=-1305.0, pos_y=-4989.0,
+                           x0=-2750.0, y0=-6550.0, x1=400.0, y1=-3750.0)
+    return SimpleNamespace(
+        path=SimpleNamespace(path=[[SimpleNamespace(x=100.0, y=-200.0)]]),
+        charger=SimpleNamespace(x=331.0, y=17.0),
+        vacuum_position=SimpleNamespace(x=181.0, y=16.0),
+        goto=None, rooms={5: room},
+        walls=[SimpleNamespace(x0=0.0, y0=0.0, x1=1000.0, y1=2000.0)],
+        no_go_areas=[], no_mopping_areas=[],
+        zones=[SimpleNamespace(x0=0.0, y0=0.0, x1=1000.0, y1=2000.0)],
+        vacuum_room=None, vacuum_room_name=None,
+    )
+
+
+def test_vector_map_scales_millimetre_overlays_to_metres():
+    """The xiaomi JSON family reports mm; the card contract is metres.
+
+    Unscaled, a 3-metre room spans ~3000 units, so the card's absolute label
+    and marker sizes (font-size 0.42, dock r=0.32) render 1000x too small.
+    """
+    out = map_vector.vector_map(
+        _fake_md_mm(), b"", ijai_grid=False, units_per_metre=1000.0)
+
+    assert out["charger"] == {"x": 0.331, "y": 0.017}
+    assert out["vacuum"] == {"x": 0.181, "y": 0.016}
+    assert out["rooms"][0]["bbox"] == [-2.75, -6.55, 0.4, -3.75]
+    assert out["rooms"][0]["cx"] == -1.305
+    assert out["rooms"][0]["cy"] == -4.989
+    assert out["path"] == [[0.1, -0.2]]
+    assert out["walls"] == [[0.0, 0.0, 1.0, 2.0]]
+    assert out["zones"] == [[0.0, 0.0, 1.0, 2.0]]
+
+
+def test_vector_map_defaults_to_no_scaling():
+    """Brands already in metres must pass through byte-identical."""
+    unscaled = map_vector.vector_map(_fake_md_mm(), b"", ijai_grid=False)
+
+    assert unscaled["charger"] == {"x": 331.0, "y": 17.0}
+    assert unscaled["rooms"][0]["bbox"] == [-2750.0, -6550.0, 400.0, -3750.0]
+
+
+def test_vector_map_keeps_absent_room_label_position_absent():
+    """`Room.pos_x`/`pos_y` are optional; None must not become 0.0, which the
+    card would draw as a label stranded at the origin."""
+    md = _fake_md_mm()
+    md.rooms[5].pos_x = None
+    md.rooms[5].pos_y = None
+
+    out = map_vector.vector_map(md, b"", ijai_grid=False, units_per_metre=1000.0)
+
+    assert out["rooms"][0]["cx"] is None
+    assert out["rooms"][0]["cy"] is None
+
+
+def test_overlay_units_per_metre_only_scales_xiaomi_json_family():
+    """ijai/dreame/viomi/roidmi parsers already report metres."""
+    assert map_parsers.overlay_units_per_metre("xiaomi") == 1000.0
+    for brand in ("ijai", "dreame", "viomi", "roidmi"):
+        assert map_parsers.overlay_units_per_metre(brand) == 1.0
+
+
 def test_vector_map_non_ijai_empty_grid():
     """Non-ijai brands carry overlays but no labelled grid (best-effort)."""
     out = map_vector.vector_map(_fake_md(), b"", ijai_grid=False)

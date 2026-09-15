@@ -123,6 +123,20 @@ def has_ijai_grid(brand: str) -> bool:
     return brand == "ijai"
 
 
+def overlay_units_per_metre(brand: str) -> float:
+    """Divisor converting this brand's overlay coordinates to metres.
+
+    `vacuum_map_parser_xiaomi` (the JSON-map family: ov71gl, ov81gl, d109gl,
+    ...) reports every overlay coordinate in MILLIMETRES. It builds its
+    coordinate transform with the payload `resolution` as "Millimeters per
+    pixel" and `minX`/`minY` straight from the mm `origin_x`/`origin_y`, and
+    reads the dock from the raw mm `pile_x`/`pile_y`. Every other brand
+    already emits metres -- the unit `map_vector.vector_map` documents and the
+    bundled card draws in -- so only this family needs scaling.
+    """
+    return 1000.0 if brand == "xiaomi" else 1.0
+
+
 def make_parser(brand: str, model: str, palette, sizes, drawables, image_config, texts):
     """Construct the parser for ``brand`` (lazy import). Raises ValueError for an
     unknown brand, ImportError if the brand's dep isn't installed."""
