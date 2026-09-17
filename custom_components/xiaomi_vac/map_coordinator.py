@@ -33,6 +33,7 @@ from .coordinator import XiaomiVacuumCoordinator
 from .device import IjaiVacuumDevice
 from .map import MapFetcher, MapResult, SessionExpired
 from .map_cache import MapCache
+from .map_ids import resolve_active_map_id
 from .map_parsers import parser_key, required_map_key_inputs
 from .spec.types import MapCapability
 
@@ -55,11 +56,6 @@ _REFRESH_READY_ACTIVITIES = {"docked", "idle"}
 # Phase 0: divergence between them is real but not gated on any local state,
 # so both are read every poll rather than treating one as a fallback).
 _SLOTS = ("0", "1")
-
-# Cache key for devices whose map capability has no map-list catalogue at all
-# (single physical map, e.g. viomi/dreame/roidmi profiles without get_map_list).
-# There is exactly one map, so a fixed key round-trips the cache correctly.
-_SINGLE_MAP_ID = 0
 
 # Vector keys that only make sense for the CURRENTLY active map; stripped from
 # any other cached map shown in `.maps` so its stale position doesn't render on
@@ -391,29 +387,31 @@ class XiaomiMapCoordinator(DataUpdateCoordinator[MapResult]):
     def _resolve_active_id(
         self, active_meta: dict | None, decoded: list[MapResult], maps_meta: list[dict],
     ) -> int | None:
-        """Which map this cycle's data belongs to, in order of trust:
+        """Which map this cycle's data belongs to (see map_ids.resolve_active_map_id).
 
-        1. A live blob's own embedded id (ground truth from the cloud blob
-           itself — ijai only; other brands never carry one).
-        2. The local map-list's "cur" entry (independent of the cloud fetch).
-        3. A fixed single-map key, but ONLY when this profile has no map-list
-           capability at all — an empty `maps_meta` from a transient read
-           failure on a multi-map device must NOT be mistaken for that.
+        The live blob's embedded id is trusted only when it names a known map;
+        an orphan id (ijai's mapHeadId=0 interim/realtime render) is attributed
+        to the currently active map instead of inventing a phantom entry.
         """
-        for r in decoded:
-            if r.map_id is not None:
-                return r.map_id
+        known_ids = {
+            int(m["id"]) for m in maps_meta if m.get("id") is not None
+        }
+        active_meta_id: int | None = None
         if active_meta and active_meta.get("id") is not None:
             try:
-                return int(active_meta["id"])
+                active_meta_id = int(active_meta["id"])
             except (TypeError, ValueError):
-                pass
-        # Use the MQTT-signaled id when map-list read failed this cycle.
-        if self._mqtt_active_id is not None:
-            return self._mqtt_active_id
-        if not self._has_map_list and not maps_meta:
-            return _SINGLE_MAP_ID
-        return None
+                active_meta_id = None
+        blob_id = next((r.map_id for r in decoded if r.map_id is not None), None)
+        previous_id = self.data.map_id if self.data is not None else None
+        return resolve_active_map_id(
+            blob_id=blob_id,
+            active_meta_id=active_meta_id,
+            mqtt_id=self._mqtt_active_id,
+            previous_id=previous_id,
+            known_ids=known_ids,
+            has_map_list=self._has_map_list,
+        )
 
     def _serve(
         self, cache: MapCache, active_id: int | None, maps_meta: list[dict],

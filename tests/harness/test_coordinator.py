@@ -567,6 +567,59 @@ async def test_map_coordinator_serves_from_cache_when_both_slots_key_b(
     assert result.image_png == b"ground-floor-prior-render"
     assert result.attributes == {"rooms": 3}
     assert result.content_hash == "hash-prior"
+
+
+async def test_map_coordinator_attributes_orphan_live_id_to_active_map(
+    hass: HomeAssistant,
+) -> None:
+    """An interim render (mapHeadId=0) belongs to the active map, not a phantom.
+
+    The device lists maps with 42 active; this cycle's live slot decodes with
+    mapHeadId=0 (the robot's realtime/interim frame while localizing/moving).
+    The render must be cached and served under map 42 — never under 0, which the
+    map-list prune would evict, blanking the camera despite a valid cached map.
+    """
+    coord = _map_coord(hass)
+    coord._has_map_list = True
+    coord._device.map_list.return_value = [
+        {"id": 42, "cur": True, "name": "Ground Floor"},
+        {"id": 7, "cur": False, "name": "Upstairs"},
+    ]
+
+    live = _fake_result(map_id=0, content_hash="hash-interim")
+    fetcher = MagicMock()
+    fetcher.fetch.side_effect = [live, None]  # slot 0 decodes, slot 1 doesn't
+    coord._fetcher = fetcher
+
+    fake_cache = _FakeCache()
+    await fake_cache.async_upsert(
+        42,
+        png=b"prior-active-render",
+        attributes={"rooms": 3},
+        vector={"map_id": 42},
+        content_hash="hash-prior",
+        timestamp=500.0,
+    )
+
+    async def _exec(fn, *a):
+        return fn(*a)
+
+    with (
+        patch.object(coord, "_ensure_cache", new=AsyncMock(return_value=fake_cache)),
+        patch.object(hass, "async_add_executor_job", new=AsyncMock(side_effect=_exec)),
+    ):
+        result = await coord._async_update_data()
+
+    # Camera stays available and shows the fresh live render, not the stale cache.
+    assert result is not None
+    assert result.map_id == 42
+    assert result.image_png == live.image_png
+    # No phantom entry; the live render landed on the real active map.
+    assert fake_cache.get(0) is None
+    assert fake_cache.get(42) is not None
+    assert fake_cache.get(42).png == live.image_png
+
+
 # ---------------------------------------------------------------------------
 # Map refresh movement action
 # ---------------------------------------------------------------------------
