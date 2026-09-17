@@ -15,6 +15,30 @@ from __future__ import annotations
 SINGLE_MAP_ID = 0
 
 
+def known_map_ids(maps_meta: list) -> set[int]:
+    """Numeric map ids the device currently lists (unusable entries skipped)."""
+    ids: set[int] = set()
+    for meta in maps_meta:
+        raw = meta.get("id") if isinstance(meta, dict) else None
+        if raw is None:
+            continue
+        try:
+            ids.add(int(raw))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def is_orphan_blob_id(blob_id: int | None, known_ids: set[int]) -> bool:
+    """True when a blob names a map the device does not list.
+
+    Such a frame (e.g. ijai's ``mapHeadId=0`` interim/realtime render while the
+    robot localizes) is not trustworthy map content: attribute it to the active
+    map for serving, but never let it overwrite the last-known-good cache.
+    """
+    return blob_id is not None and bool(known_ids) and blob_id not in known_ids
+
+
 def resolve_active_map_id(
     *,
     blob_id: int | None,
