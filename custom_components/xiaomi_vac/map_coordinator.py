@@ -33,7 +33,7 @@ from .coordinator import XiaomiVacuumCoordinator
 from .device import IjaiVacuumDevice
 from .map import MapFetcher, MapResult, SessionExpired
 from .map_cache import MapCache
-from .map_ids import resolve_active_map_id
+from .map_ids import is_orphan_blob_id, known_map_ids, resolve_active_map_id
 from .map_parsers import parser_key, required_map_key_inputs
 from .spec.types import MapCapability
 
@@ -385,7 +385,10 @@ class XiaomiMapCoordinator(DataUpdateCoordinator[MapResult]):
         return results
 
     def _resolve_active_id(
-        self, active_meta: dict | None, decoded: list[MapResult], maps_meta: list[dict],
+        self,
+        active_meta: dict | None,
+        decoded: list[MapResult],
+        known_ids: set[int],
     ) -> int | None:
         """Which map this cycle's data belongs to (see map_ids.resolve_active_map_id).
 
@@ -393,9 +396,6 @@ class XiaomiMapCoordinator(DataUpdateCoordinator[MapResult]):
         an orphan id (ijai's mapHeadId=0 interim/realtime render) is attributed
         to the currently active map instead of inventing a phantom entry.
         """
-        known_ids = {
-            int(m["id"]) for m in maps_meta if m.get("id") is not None
-        }
         active_meta_id: int | None = None
         if active_meta and active_meta.get("id") is not None:
             try:
@@ -417,9 +417,10 @@ class XiaomiMapCoordinator(DataUpdateCoordinator[MapResult]):
         self, cache: MapCache, active_id: int | None, maps_meta: list[dict],
     ) -> MapResult | None:
         """Build the result to serve from whatever the cache now holds for
-        `active_id` (a live decode this cycle was already upserted before this
-        runs, so cache and live are never out of sync — serve-parity holds by
-        construction). None only when nothing has ever been cached for it.
+        `active_id`. A trustworthy live decode this cycle was upserted before
+        this runs, so cache and live are in sync; an orphan interim frame is
+        deliberately not cached, so the last-known-good render is served. None
+        only when nothing has ever been cached for `active_id`.
         """
         if active_id is None:
             return None
@@ -458,7 +459,9 @@ class XiaomiMapCoordinator(DataUpdateCoordinator[MapResult]):
         is deliberately kept: key inputs are fine, this was the network.
         """
         active_meta = next((m for m in maps_meta if m.get("cur")), None)
-        active_id = self._resolve_active_id(active_meta, [], maps_meta)
+        active_id = self._resolve_active_id(
+            active_meta, [], known_map_ids(maps_meta),
+        )
         result = self._serve(cache, active_id, maps_meta)
         if result is None:
             raise UpdateFailed(f"Map update error: {err}") from err
@@ -516,8 +519,9 @@ class XiaomiMapCoordinator(DataUpdateCoordinator[MapResult]):
                 return self._serve_cached_or_fail(cache, maps_meta, err)
 
             decoded = [r for r in slot_results if r is not None]
+            known_ids = known_map_ids(maps_meta)
             active_meta = next((m for m in maps_meta if m.get("cur")), None)
-            active_id = self._resolve_active_id(active_meta, decoded, maps_meta)
+            active_id = self._resolve_active_id(active_meta, decoded, known_ids)
             _LOGGER.debug(
                 "Map cycle: slot keys=%s active_id=%s maps_listed=%d",
                 ["A" if r is not None else "B" for r in slot_results],
@@ -527,8 +531,13 @@ class XiaomiMapCoordinator(DataUpdateCoordinator[MapResult]):
             # Whichever slot decrypted (Key A) wins and refreshes the cache for
             # this map id; both slots being None just means both were Key B this
             # cycle — normal, not an error, and handled by serving from cache.
+            # An orphan frame (an id the device doesn't list — the interim
+            # render written while the robot localizes) is attributed to the
+            # active map for serving, but must NOT overwrite the last-known-good
+            # cache: its content may be a placeholder, not the real map.
             live = decoded[0] if decoded else None
-            if live is not None and active_id is not None:
+            live_is_orphan = live is not None and is_orphan_blob_id(live.map_id, known_ids)
+            if live is not None and active_id is not None and not live_is_orphan:
                 live_at = time.time()
                 self._last_live_at = live_at
                 await cache.async_upsert(
@@ -539,13 +548,18 @@ class XiaomiMapCoordinator(DataUpdateCoordinator[MapResult]):
                     content_hash=live.content_hash,
                     timestamp=live_at,
                 )
+            elif live_is_orphan:
+                _LOGGER.debug(
+                    "Ignoring orphan interim map id=%s (not in catalogue %s); "
+                    "serving the active map from cache",
+                    live.map_id, sorted(known_ids),
+                )
 
             # Prune maps the device no longer lists, but never off a transient
             # empty read (map-reliability Phase 0 eviction decision).
             if maps_meta:
-                keep_ids = {int(m["id"]) for m in maps_meta if m.get("id") is not None}
-                if keep_ids:
-                    await cache.async_prune(keep_ids)
+                if known_ids:
+                    await cache.async_prune(known_ids)
 
             result = self._serve(cache, active_id, maps_meta)
             if result is None:

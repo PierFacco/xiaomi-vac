@@ -82,6 +82,31 @@ def test_missing_id_with_a_catalogue_does_not_invent_a_single_map() -> None:
     ) is None
 
 
+def test_known_map_ids_collects_numeric_catalogue_ids() -> None:
+    """Catalogue ids are read as ints; entries without a usable id are ignored."""
+    assert map_ids.known_map_ids(
+        [{"id": 42}, {"id": "7"}, {"name": "no id"}, {"id": None}, {"id": "x"}]
+    ) == {42, 7}
+
+
+def test_blob_id_absent_from_a_nonempty_catalogue_is_orphan() -> None:
+    """A blob that names a map the device does not list is an interim frame."""
+    assert map_ids.is_orphan_blob_id(0, {42, 7}) is True
+
+
+def test_blob_id_in_the_catalogue_is_not_orphan() -> None:
+    assert map_ids.is_orphan_blob_id(42, {42, 7}) is False
+
+
+def test_blob_id_is_not_orphan_without_a_catalogue() -> None:
+    """No catalogue to compare against: the blob id is taken at face value."""
+    assert map_ids.is_orphan_blob_id(7, set()) is False
+
+
+def test_missing_blob_id_is_not_orphan() -> None:
+    assert map_ids.is_orphan_blob_id(None, {42}) is False
+
+
 def test_in_catalogue_blob_id_beats_the_catalogue_active_entry() -> None:
     """A blob that names a real map is ground truth for that map."""
     assert map_ids.resolve_active_map_id(

@@ -24,8 +24,13 @@ CONF_OAUTH_DEVICE_ID = "oauth_device_id"
 CONF_OAUTH_REDIRECT_URI = "oauth_redirect_uri"
 
 DEFAULT_SCAN_INTERVAL = 10  # seconds, local MIoT polling
-MAP_SCAN_INTERVAL = 30      # seconds, cloud map refresh while cleaning
-MAP_IDLE_INTERVAL = 300     # seconds, cloud map refresh while docked/idle
+# Cloud map refresh. The interval is only re-tuned at the start of an update,
+# so the idle value is also the worst-case lag before a just-started clean
+# switches to the fast cadence: keep it short enough that the live map appears
+# promptly (transient cloud errors are served from cache, so extra polls are
+# cheap). See map_coordinator._tune_interval.
+MAP_SCAN_INTERVAL = 15      # seconds, cloud map refresh while cleaning
+MAP_IDLE_INTERVAL = 60      # seconds, cloud map refresh while docked/idle
 
 # Servers accepted by the Xiaomi cloud.
 SERVERS = ["cn", "de", "us", "ru", "tw", "sg", "in", "i2"]

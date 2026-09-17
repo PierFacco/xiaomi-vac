@@ -572,12 +572,13 @@ async def test_map_coordinator_serves_from_cache_when_both_slots_key_b(
 async def test_map_coordinator_attributes_orphan_live_id_to_active_map(
     hass: HomeAssistant,
 ) -> None:
-    """An interim render (mapHeadId=0) belongs to the active map, not a phantom.
+    """An interim render (mapHeadId=0) keeps the camera up without polluting cache.
 
     The device lists maps with 42 active; this cycle's live slot decodes with
-    mapHeadId=0 (the robot's realtime/interim frame while localizing/moving).
-    The render must be cached and served under map 42 — never under 0, which the
-    map-list prune would evict, blanking the camera despite a valid cached map.
+    mapHeadId=0 (the robot's realtime/interim frame while localizing). That
+    frame must not blank the camera, but it is not trustworthy map content
+    either: it is neither cached under 42 (would overwrite the good render) nor
+    under 0 (pruned away, causing the blank). The cached active map is served.
     """
     coord = _map_coord(hass)
     coord._has_map_list = True
@@ -610,13 +611,47 @@ async def test_map_coordinator_attributes_orphan_live_id_to_active_map(
     ):
         result = await coord._async_update_data()
 
-    # Camera stays available and shows the fresh live render, not the stale cache.
+    # Camera stays available, serving the last-known-good active map.
+    assert result is not None
+    assert result.map_id == 42
+    assert result.image_png == b"prior-active-render"
+    # No phantom entry, and the good render was NOT overwritten by the frame.
+    assert fake_cache.get(0) is None
+    assert fake_cache.get(42) is not None
+    assert fake_cache.get(42).png == b"prior-active-render"
+
+
+async def test_map_coordinator_caches_known_live_render_over_prior(
+    hass: HomeAssistant,
+) -> None:
+    """A live render naming a real map still refreshes the cache and is served."""
+    coord = _map_coord(hass)
+    coord._has_map_list = True
+    coord._device.map_list.return_value = [{"id": 42, "cur": True, "name": "Ground Floor"}]
+
+    live = _fake_result(map_id=42, content_hash="hash-new")
+    fetcher = MagicMock()
+    fetcher.fetch.side_effect = [live, None]
+    coord._fetcher = fetcher
+
+    fake_cache = _FakeCache()
+    await fake_cache.async_upsert(
+        42, png=b"prior-render", attributes={"rooms": 3},
+        vector={"map_id": 42}, content_hash="hash-prior", timestamp=500.0,
+    )
+
+    async def _exec(fn, *a):
+        return fn(*a)
+
+    with (
+        patch.object(coord, "_ensure_cache", new=AsyncMock(return_value=fake_cache)),
+        patch.object(hass, "async_add_executor_job", new=AsyncMock(side_effect=_exec)),
+    ):
+        result = await coord._async_update_data()
+
     assert result is not None
     assert result.map_id == 42
     assert result.image_png == live.image_png
-    # No phantom entry; the live render landed on the real active map.
-    assert fake_cache.get(0) is None
-    assert fake_cache.get(42) is not None
     assert fake_cache.get(42).png == live.image_png
 
 
