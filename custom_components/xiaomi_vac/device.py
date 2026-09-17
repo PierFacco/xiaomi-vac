@@ -256,6 +256,70 @@ class IjaiVacuumDevice:
         }
         return cap.set_room_clean, [values[piid] for piid in cap.set_room_clean.in_piids]
 
+    # --- zone (area) cleaning -------------------------------------------
+    def _point_zone(self):
+        cap = self.profile.map
+        if isinstance(cap, MapCapability):
+            return cap.point_zone
+        return None
+
+    def zone_clean_action(self):
+        """The set-zone-point action for this model, or None."""
+        pz = self._point_zone()
+        return None if pz is None else pz.set_zone_point
+
+    def zone_clean_start_action(self):
+        """The start-zone-clean action for this model, or None."""
+        pz = self._point_zone()
+        return None if pz is None else pz.start_zone_clean
+
+    def zone_clean_params(self, x0: float, y0: float, x1: float, y1: float) -> list[str] | None:
+        """set-zone-point params for a rectangle in the map's metre space.
+
+        ijai expects a single ``"[x0,y0,x1,y1,1]"`` string in *millimetres*.
+        The integration's map vector/camera coordinates are metres (see
+        ``map_vector`` bounds/resolution), hence the x1000.
+        """
+        if self.zone_clean_action() is None:
+            return None
+        mm = [round(v * 1000) for v in (x0, y0, x1, y1)]
+        return [f"[{mm[0]},{mm[1]},{mm[2]},{mm[3]},1]"]
+
+    def _action_piid(self, action, values) -> dict:
+        """Call an action whose MIoT spec declares piid-keyed inputs.
+
+        The device rejects the bare-value form for these ("user ack timeout",
+        -9999); each value must be sent as ``{"piid": p, "value": v}``, exactly
+        as xiaomi_miot's ``in_params`` does. Actions without declared inputs
+        fall through to the plain form.
+        """
+        piids = action.in_piids or (
+            (action.in_piid,) if action.in_piid is not None else ()
+        )
+        if not piids:
+            return self._action(action, values)
+        params = [{"piid": p, "value": v} for p, v in zip(piids, values)]
+        return self._action(action, params)
+
+    def clean_zone(self, x0: float, y0: float, x1: float, y1: float) -> None:
+        """Start an area (zone) clean for the given metre rectangle.
+
+        Two MIoT steps, both required (verified on ijai.vacuum.v19):
+
+        1. ``set-zone-point`` (9/8) stores the rectangle (mm, piid-keyed string)
+           and returns the map id/type/timestamp — on its own it does NOT start
+           anything; the robot stays docked.
+        2. ``start-zone-clean`` (9/3, no args) actually starts the clean.
+        """
+        action = self.zone_clean_action()
+        params = self.zone_clean_params(x0, y0, x1, y1)
+        if action is None or params is None:
+            raise ValueError(f"{self.model} has no zone-clean capability")
+        self._action_piid(action, params)
+        start = self.zone_clean_start_action()
+        if start is not None:
+            self._action(start, [])
+
     # --- maps ------------------------------------------------------------
     def map_list(self) -> list[dict]:
         """Return [{'name', 'id', 'cur'}...] via get-map-list action.
