@@ -8,7 +8,10 @@ not just a specific error code.
 """
 from __future__ import annotations
 
+import base64
 from unittest.mock import patch
+
+import requests
 
 from cloud.connector import XiaomiCloud
 
@@ -70,3 +73,16 @@ def test_map_url_returns_none_when_call_itself_returns_none():
     with patch.object(cloud, "_call", return_value=None):
         url = cloud.map_url("de", "123", "0")
     assert url is None
+
+
+def test_call_returns_none_on_request_exception():
+    """A timeout/DNS/connection error on one regional server must be swallowed
+    (-> None) instead of propagating and aborting multi-region discovery —
+    find_device()/list_vacuums() already treat a falsy result as "skip this
+    server" (issue #42)."""
+    cloud = _cloud()
+    cloud.ssecurity = base64.b64encode(b"0123456789abcdef").decode()
+    cloud.service_token = "svc"
+    with patch.object(cloud._s, "post", side_effect=requests.exceptions.Timeout("boom")):
+        result = cloud._call("https://de.api.io.mi.com/app/home/device_list", {"data": "{}"})
+    assert result is None
