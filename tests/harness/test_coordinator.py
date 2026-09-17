@@ -620,6 +620,105 @@ async def test_map_coordinator_attributes_orphan_live_id_to_active_map(
     assert fake_cache.get(42).png == live.image_png
 
 
+async def test_map_coordinator_serves_cache_on_transient_fetch_error(
+    hass: HomeAssistant,
+) -> None:
+    """A DNS/network error must not blank the camera while a map is cached.
+
+    The cloud host can transiently fail to resolve (Pi-hole hiccup) even though
+    the local map-list read succeeds. Serving the last-known-good render keeps
+    the camera up instead of raising UpdateFailed.
+    """
+    coord = _map_coord(hass)
+    coord._device.map_list.return_value = [{"id": 42, "cur": True, "name": "Ground Floor"}]
+
+    fetcher = MagicMock()
+    fetcher.fetch.side_effect = ConnectionError("Failed to resolve map host")
+    coord._fetcher = fetcher
+
+    fake_cache = _FakeCache()
+    await fake_cache.async_upsert(
+        42,
+        png=b"ground-floor-prior-render",
+        attributes={"rooms": 3},
+        vector={"map_id": 42},
+        content_hash="hash-prior",
+        timestamp=500.0,
+    )
+
+    async def _exec(fn, *a):
+        return fn(*a)
+
+    with (
+        patch.object(coord, "_ensure_cache", new=AsyncMock(return_value=fake_cache)),
+        patch.object(hass, "async_add_executor_job", new=AsyncMock(side_effect=_exec)),
+    ):
+        result = await coord._async_update_data()
+
+    assert result is not None
+    assert result.map_id == 42
+    assert result.image_png == b"ground-floor-prior-render"
+    # A transient network error is not a key-input problem — keep the fetcher.
+    assert coord._fetcher is fetcher
+
+
+async def test_map_coordinator_raises_when_transient_error_and_nothing_cached(
+    hass: HomeAssistant,
+) -> None:
+    """With no cached render, a transient fetch error still surfaces as UpdateFailed."""
+    coord = _map_coord(hass)
+    coord._device.map_list.return_value = [{"id": 42, "cur": True, "name": "Ground Floor"}]
+
+    fetcher = MagicMock()
+    fetcher.fetch.side_effect = ConnectionError("Failed to resolve map host")
+    coord._fetcher = fetcher
+
+    async def _exec(fn, *a):
+        return fn(*a)
+
+    with (
+        patch.object(coord, "_ensure_cache", new=AsyncMock(return_value=_FakeCache())),
+        patch.object(hass, "async_add_executor_job", new=AsyncMock(side_effect=_exec)),
+        pytest.raises(UpdateFailed, match="Map update error"),
+    ):
+        await coord._async_update_data()
+
+
+async def test_map_coordinator_serves_cache_when_retry_fetch_fails_transiently(
+    hass: HomeAssistant,
+) -> None:
+    """A transient error on the post-refresh retry must serve cache, not blank."""
+    coord = _map_coord(hass)
+    coord._device.map_list.return_value = [{"id": 42, "cur": True, "name": "Ground Floor"}]
+
+    fetcher = MagicMock()
+    fetcher.fetch.side_effect = [
+        SessionExpired("dead"), SessionExpired("dead"),  # first pass: both slots expired
+        ConnectionError("Failed to resolve map host"),    # retry: transient network error
+    ]
+    coord._fetcher = fetcher
+
+    fake_cache = _FakeCache()
+    await fake_cache.async_upsert(
+        42, png=b"prior-render", attributes={}, vector={"map_id": 42},
+        content_hash="h", timestamp=1.0,
+    )
+
+    async def _exec(fn, *a):
+        return fn(*a)
+
+    with (
+        patch.object(coord, "_refresh_and_persist", new=AsyncMock(return_value=True)),
+        patch.object(coord, "_ensure_cache", new=AsyncMock(return_value=fake_cache)),
+        patch.object(hass, "async_add_executor_job", new=AsyncMock(side_effect=_exec)),
+    ):
+        result = await coord._async_update_data()
+
+    assert result is not None
+    assert result.map_id == 42
+    assert result.image_png == b"prior-render"
+
+
 # ---------------------------------------------------------------------------
 # Map refresh movement action
 # ---------------------------------------------------------------------------

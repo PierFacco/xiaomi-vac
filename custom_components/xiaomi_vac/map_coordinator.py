@@ -447,6 +447,27 @@ class XiaomiMapCoordinator(DataUpdateCoordinator[MapResult]):
         ]
         return served
 
+    def _serve_cached_or_fail(
+        self, cache: MapCache, maps_meta: list[dict], err: Exception,
+    ) -> MapResult:
+        """Serve the last-known-good map after a non-auth fetch failure.
+
+        A transient cloud/network error (e.g. a DNS hiccup) must not blank a
+        camera that has a readable cached render. Only when nothing is cached
+        for the resolved active map does it surface as UpdateFailed. The fetcher
+        is deliberately kept: key inputs are fine, this was the network.
+        """
+        active_meta = next((m for m in maps_meta if m.get("cur")), None)
+        active_id = self._resolve_active_id(active_meta, [], maps_meta)
+        result = self._serve(cache, active_id, maps_meta)
+        if result is None:
+            raise UpdateFailed(f"Map update error: {err}") from err
+        _LOGGER.debug(
+            "Serving cached map active_id=%s after transient fetch error: %s",
+            active_id, err,
+        )
+        return result
+
     async def _async_update_data(self) -> MapResult:
         self._tune_interval()
         try:
@@ -489,6 +510,10 @@ class XiaomiMapCoordinator(DataUpdateCoordinator[MapResult]):
                     raise UpdateFailed(
                         "Xiaomi cloud has no map available (session is valid)"
                     ) from None
+                except Exception as err:  # noqa: BLE001 - transient (e.g. DNS)
+                    return self._serve_cached_or_fail(cache, maps_meta, err)
+            except Exception as err:  # noqa: BLE001 - transient (e.g. DNS)
+                return self._serve_cached_or_fail(cache, maps_meta, err)
 
             decoded = [r for r in slot_results if r is not None]
             active_meta = next((m for m in maps_meta if m.get("cur")), None)
