@@ -549,10 +549,16 @@ class XiaomiMapCoordinator(DataUpdateCoordinator[MapResult]):
                     timestamp=live_at,
                 )
             elif live_is_orphan:
+                cached = cache.get(active_id) if active_id is not None else None
                 _LOGGER.debug(
-                    "Ignoring orphan interim map id=%s (not in catalogue %s); "
-                    "serving the active map from cache",
+                    "Orphan interim map id=%s (not in catalogue %s): "
+                    "bounds=%s size=%s vacuum=%s rooms=%d | cached bounds=%s size=%s",
                     live.map_id, sorted(known_ids),
+                    live.vector.get("bounds"), live.vector.get("size"),
+                    live.attributes.get("vacuum_position"),
+                    len(live.attributes.get("rooms") or []),
+                    (cached.vector.get("bounds") if cached else None),
+                    (cached.vector.get("size") if cached else None),
                 )
 
             # Prune maps the device no longer lists, but never off a transient
