@@ -158,6 +158,14 @@ class XiaomiVacCard extends HTMLElement {
     if (!this._root) this._build();
     if (this._hint) return;
     this._maybeFetch();
+    // A new map render (the camera's attributes change when the coordinator
+    // upserts a fresh live frame) should reach the card at once instead of
+    // waiting for the next poll. Debounced; _refreshMap still no-ops when the
+    // served vector is unchanged.
+    if (prev && this._config.map && prev.states[this._config.map] !== hass.states[this._config.map]) {
+      clearTimeout(this._mapTrigT);
+      this._mapTrigT = setTimeout(() => this._refreshMap(), 400);
+    }
     // `hass` is replaced on EVERY state change anywhere in HA; only repaint when
     // an entity WE show actually changed (strict-equality per the frontend docs).
     if (prev && !this._relevantChanged(prev, hass)) return;
@@ -226,7 +234,7 @@ class XiaomiVacCard extends HTMLElement {
   }
   getCardSize() { return 10; }   // ~50px/unit; the card is a fixed 520px
   connectedCallback() {
-    this._poll = setInterval(() => this._refreshMap(), 8000);
+    this._poll = setInterval(() => this._refreshMap(), 4000);
     // Pause polling while scrolled off-screen (a long dashboard mounts every
     // card at once); _refreshMap also guards on document visibility.
     if ("IntersectionObserver" in window) {
@@ -236,6 +244,7 @@ class XiaomiVacCard extends HTMLElement {
   }
   disconnectedCallback() {
     clearInterval(this._poll);
+    clearTimeout(this._mapTrigT);
     if (this._io) { this._io.disconnect(); this._io = null; }
     if (this._ro) { this._ro.disconnect(); this._ro = null; }
     if (this._anim) { this._anim.destroy(); this._anim = null; }
