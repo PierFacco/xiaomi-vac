@@ -93,15 +93,16 @@ const MDI = {
   locate: "mdi:map-marker-radius", fan: "mdi:fan", water: "mdi:water", map: "mdi:layers",
   tools: "mdi:tools",
 };
-// Consumable sensors created by sensor.py (translation_key/icon/label kept in
-// sync with that file's XiaomiSensorDescription catalogue by hand — there is
-// no shared source of truth between the Python and JS sides of this card).
+// Union across all models — `key` is the translation_key sensor.py assigns,
+// kept in sync with its XiaomiSensorDescription catalogue by hand.
+// _consumableRows() drops the ones a given device doesn't expose.
 const CONSUMABLES = [
-  ["main_brush_life", "mdi:broom", "Main brush"],
-  ["side_brush_life", "mdi:broom", "Side brush"],
-  ["filter_life", "mdi:air-filter", "Filter"],
-  ["dust_bag_life", "mdi:trash-can-outline", "Dust bag"],
-  ["detergent_life", "mdi:cup-water", "Detergent"],
+  { key: "main_brush_life", icon: "mdi:broom", label: "Main brush" },
+  { key: "side_brush_life", icon: "mdi:broom", label: "Side brush" },
+  { key: "filter_life", icon: "mdi:air-filter", label: "Filter" },
+  { key: "mop_life", icon: "mdi:layers-triple-outline", label: "Mop pad" },
+  { key: "dust_bag_life", icon: "mdi:trash-can-outline", label: "Dust bag" },
+  { key: "detergent_life", icon: "mdi:cup-water", label: "Detergent" },
 ];
 // `charging` overlays a bolt — docked-and-charging reads identically to
 // docked-and-full otherwise (same grey accent, same fill bar).
@@ -169,7 +170,7 @@ class XiaomiVacCard extends HTMLElement {
       this._config.water || `select.${this._base()}_water_level`,
       this._config.fan || `select.${this._base()}_fan_speed`,
       this._activeMapEid(),
-      ...CONSUMABLES.map(([key]) => this._consumableEid(key)).filter(Boolean),
+      ...CONSUMABLES.map((c) => this._consumableEid(c.key)).filter(Boolean),
     ];
     return eids.some((e) => (a.states[e]) !== (b.states[e]));
   }
@@ -210,6 +211,18 @@ class XiaomiVacCard extends HTMLElement {
       if (found) { this._consumEidCache[key] = found; return found; }
     }
     return null;
+  }
+  
+  // One row per sensor the integration actually provides.
+  _consumableRows() {
+    return CONSUMABLES.flatMap((c) => {
+      const eid = this._consumableEid(c.key);
+      const st = eid && this._st(eid);
+      if (!st || st.attributes.restored) return [];
+      const n = Number(st.state);
+      const pct = Number.isNaN(n) ? null : Math.max(0, Math.min(100, n));
+      return [{ ...c, eid, pct }];
+    });
   }
   getCardSize() { return 10; }   // ~50px/unit; the card is a fixed 520px
   connectedCallback() {
@@ -349,7 +362,7 @@ class XiaomiVacCard extends HTMLElement {
           box-shadow:0 6px 18px rgba(0,0,0,.25);opacity:0;transition:opacity .18s,transform .18s;
           pointer-events:none;white-space:nowrap;cursor:pointer;border:0}
         .roomtag.show{opacity:1;transform:translateX(-50%) translateY(-5px);pointer-events:auto}
-        /* accessory-status panel: a collapsible sheet above the tray, toggled by
+        /* consumable-status panel: a collapsible sheet above the tray, toggled by
            the .act-consumables button — same frosted-glass treatment as .tray */
         .consum-panel{position:absolute;left:14px;right:14px;bottom:74px;z-index:8;
           background:color-mix(in srgb,var(--xv-card) 88%,transparent);
@@ -406,7 +419,7 @@ class XiaomiVacCard extends HTMLElement {
         <button class="b cyc-fan" title="Suction" aria-label="Cycle suction level"><ha-icon icon="${MDI.fan}"></ha-icon></button>
         <button class="b cyc-water" title="Water level" aria-label="Cycle water level"><ha-icon icon="${MDI.water}"></ha-icon></button>
         <button class="b cyc-map" title="Active map" aria-label="Cycle active map"><ha-icon icon="${MDI.map}"></ha-icon></button>
-        <button class="b act-consumables" title="Accessories" aria-label="Show accessory status"><ha-icon icon="${MDI.tools}"></ha-icon></button>
+        <button class="b act-consumables" title="Consumables" aria-label="Show consumable status"><ha-icon icon="${MDI.tools}"></ha-icon></button>
       </div>`;
     this.appendChild(this._root);
 
@@ -824,20 +837,14 @@ class XiaomiVacCard extends HTMLElement {
     const nm = q(".pg-img .nm");
     if (nm && vac) nm.textContent = vac.attributes.friendly_name || "Vacuum";
 
-    const showConsumables = this._enabled("show_consumables") &&
-      CONSUMABLES.some(([key]) => this._consumableEid(key));
-    q(".act-consumables").style.display = showConsumables ? "" : "none";
-    if (showConsumables) {
-      q(".consum-panel").innerHTML = CONSUMABLES.map(([key, icon, label]) => {
-        const eid = this._consumableEid(key);
-        const st = eid && this._st(eid);
-        const pct = st ? Number(st.state) : null;
-        const has = pct != null && !Number.isNaN(pct);
-        const clamped = has ? Math.max(0, Math.min(100, pct)) : 0;
-        const color = !has ? "var(--xv-muted)" : clamped < 20 ? "#e05252" : clamped < 50 ? "#e0a952" : "#4caf7d";
+    const rows = this._enabled("show_consumables") ? this._consumableRows() : [];
+    q(".act-consumables").style.display = rows.length ? "" : "none";
+    if (rows.length) {
+      q(".consum-panel").innerHTML = rows.map(({ icon, label, pct }) => {
+        const color = pct == null ? "var(--xv-muted)" : pct < 20 ? "#e05252" : pct < 50 ? "#e0a952" : "#4caf7d";
         return `<div class="consum-row"><ha-icon icon="${icon}"></ha-icon><span class="cn">${esc(label)}</span>` +
-          `<span class="cbar"><i style="width:${clamped}%;background:${color}"></i></span>` +
-          `<span class="cpct" style="color:${has ? color : ""}">${has ? clamped + "%" : "—"}</span></div>`;
+          `<span class="cbar"><i style="width:${pct ?? 0}%;background:${color}"></i></span>` +
+          `<span class="cpct" style="color:${pct == null ? "" : color}">${pct == null ? "—" : pct + "%"}</span></div>`;
       }).join("");
     } else {
       q(".consum-panel").classList.remove("show");
@@ -872,7 +879,7 @@ class XiaomiVacCardEditor extends HTMLElement {
           show_active_map: "Show active map control",
           show_room_labels: "Show room labels",
           allow_room_cleaning: "Allow room cleaning",
-          show_consumables: "Show accessory status button",
+          show_consumables: "Show consumable status button",
         }[s.name] || s.name);
       this._form.addEventListener("value-changed", (e) =>
         this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: e.detail.value }, bubbles: true, composed: true })));
