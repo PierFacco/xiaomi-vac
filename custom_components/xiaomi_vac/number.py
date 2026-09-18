@@ -30,7 +30,12 @@ async def async_setup_entry(
 # (all 6 distinct dreame cores checked: p2008/p2009/p2114a/p2149o/p2150a/
 # r2215). xiaomi.ov21gl/ov71gl are the JSON-map xiaomi profiles (E1/E8)
 # and diverge from the xiaomi brand default at 0-100 — checked first.
-_VOLUME_MAX_BY_PROFILE_ID = {"xiaomi.ov21gl": 100, "xiaomi.ov71gl": 100}
+# xiaomi.c107 is hardware-confirmed at 0-100 (issue #18).
+_VOLUME_MAX_BY_PROFILE_ID = {
+    "xiaomi.c107": 100,
+    "xiaomi.ov21gl": 100,
+    "xiaomi.ov71gl": 100,
+}
 _VOLUME_MAX_BY_BRAND = {"dreame": 100}
 _VOLUME_MAX_DEFAULT = 10
 

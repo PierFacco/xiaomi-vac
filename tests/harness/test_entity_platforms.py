@@ -236,6 +236,16 @@ async def test_number_setup_no_entity_when_no_volume(hass: HomeAssistant) -> Non
     assert added == []
 
 
+def test_c107_volume_uses_full_hardware_range() -> None:
+    coord = _make_coordinator()
+    coord.device.profile.profile_id = "xiaomi.c107"
+    coord.device.profile.brand = "xiaomi"
+
+    number = VolumeNumber(coord, _make_entry())
+
+    assert number.native_max_value == 100
+
+
 # ---------------------------------------------------------------------------
 # Command dispatch: vacuum entity
 # ---------------------------------------------------------------------------
