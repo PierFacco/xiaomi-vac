@@ -18,9 +18,10 @@ class FakeMiotDevice:
     action_results: dict[tuple[int, int], object] = {}
     info_mac = "AA:BB:CC:DD:EE:FF"
 
-    def __init__(self, host, token, timeout=5):  # noqa: ARG002
+    def __init__(self, host, token, mapping=None, timeout=5):  # noqa: ARG002
         self.calls = []
         self.batch_max_properties = []
+        self.mapping = mapping
         self.instances.append(self)
 
     def get_property_by(self, siid: int, piid: int):

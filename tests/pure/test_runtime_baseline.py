@@ -78,8 +78,9 @@ def test_trimmed_dreame_layout_is_not_onboardable():
 class _FakeMiotDevice:
     instances: list["_FakeMiotDevice"] = []
 
-    def __init__(self, host, token, timeout=5):
+    def __init__(self, host, token, mapping=None, timeout=5):
         self.calls = []
+        self.mapping = mapping
         self.instances.append(self)
 
     def set_property_by(self, siid, piid, value):

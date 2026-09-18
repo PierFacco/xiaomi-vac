@@ -29,6 +29,14 @@ def test_start_stop_and_return_home_use_core_actions(monkeypatch):
     ]
 
 
+def test_device_passes_an_explicit_empty_mapping(monkeypatch):
+    device_mod = load_device_module(monkeypatch)
+
+    device_mod.IjaiVacuumDevice("host", "token", "ijai.vacuum.v17")
+
+    assert FakeMiotDevice.instances[-1].mapping == {}
+
+
 def test_pause_falls_back_to_stop_when_no_pause_action(monkeypatch):
     device_mod = load_device_module(monkeypatch)
     device = device_mod.IjaiVacuumDevice("host", "token", "ijai.vacuum.v17")

@@ -72,7 +72,7 @@ class IjaiVacuumDevice:
             )
         self.profile: ModelProfile = profile
         self.core: CoreCapability = profile.core
-        self._dev = MiotDevice(host, token, timeout=timeout)
+        self._dev = MiotDevice(host, token, mapping={}, timeout=timeout)
 
     # --- helpers ---------------------------------------------------------
     def _batch_get(self, props: list) -> dict:
