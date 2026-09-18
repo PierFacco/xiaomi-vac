@@ -388,7 +388,15 @@ class XiaomiCloud:
             params[k] = _enc_rc4(sn, v)
         params.update({"signature": _enc_sig(url, sn, params),
                        "ssecurity": self.ssecurity, "_nonce": nonce})
-        r = self._s.post(url, headers=h, cookies=ck, params=params, timeout=10)
+        try:
+            r = self._s.post(url, headers=h, cookies=ck, params=params, timeout=10)
+        except requests.exceptions.RequestException as ex:
+            # A transient network/DNS/timeout failure on ONE regional server
+            # must not abort multi-region discovery (find_device/list_vacuums
+            # already treat a falsy result as "skip this server"). Report it as
+            # no response instead of propagating (#42).
+            _LOGGER.debug("Cloud request to %s failed: %s", url, ex)
+            return None
         if r.status_code != 200:
             return None
         return json.loads(_dec_rc4(self._signed_nonce(params["_nonce"]), r.text))
