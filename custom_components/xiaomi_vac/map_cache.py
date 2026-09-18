@@ -17,7 +17,22 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-STORAGE_VERSION = 1
+# Schema of the cached payload itself. Bump to invalidate every cached entry:
+# `async_load` then discards them via the schema-mismatch branch below.
+# v2 (map units): overlay coords for the xiaomi JSON-map family are emitted in
+# metres, not millimetres -- entries written by <=1.2.5 hold the old units and
+# must not be served alongside freshly decoded ones.
+# v3 (room contours): the xiaomi JSON-map family now carries `room_chains` +
+# `bounds` + `resolution` traced from the payload's pixel grid. A v2 entry holds
+# the bbox-only vector, and `async_upsert` is a no-op while the blob's
+# content_hash is unchanged -- so without this bump the stale contour-less
+# vector keeps being served from disk after the upgrade.
+STORAGE_VERSION = 3
+# HA's own Store file-format version, deliberately pinned. Raising it would make
+# Store.async_load hit its migration path and raise NotImplementedError, which
+# `async_load` can only report as "cache unreadable"; the payload check below is
+# the accurate, purpose-built eviction route.
+_STORE_FILE_VERSION = 1
 _STORAGE_KEY_FMT = f"{DOMAIN}_map_cache_{{entry_id}}"
 
 
@@ -71,7 +86,7 @@ class MapCache:
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
         self._store: Store[dict[str, Any]] = Store(
-            hass, STORAGE_VERSION, _STORAGE_KEY_FMT.format(entry_id=entry_id)
+            hass, _STORE_FILE_VERSION, _STORAGE_KEY_FMT.format(entry_id=entry_id)
         )
         self._maps: dict[int, CachedMap] = {}
         self._loaded = False

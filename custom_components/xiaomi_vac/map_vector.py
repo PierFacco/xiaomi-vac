@@ -4,9 +4,16 @@ See docs/dev/map-pipeline.md for the per-brand map pipeline details.
 """
 from __future__ import annotations
 
+import base64
+import json
+import logging
+import zlib
+from collections.abc import Callable
 from typing import Any
 
 import vacuum_map_parser_ijai.RobotMap_pb2 as RobotMap
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _rle(grid: bytes) -> list[int]:
@@ -29,11 +36,11 @@ def _rle(grid: bytes) -> list[int]:
     return out
 
 
-def _pt(p: Any) -> dict[str, float]:
-    d = {"x": p.x, "y": p.y}
+def _pt(p: Any, to_m: Callable[[Any], Any] = lambda v: v) -> dict[str, float]:
+    d = {"x": to_m(p.x), "y": to_m(p.y)}
     a = getattr(p, "phi", None)
     if a is not None:
-        d["a"] = a
+        d["a"] = a  # heading in degrees -- never a length, never scaled
     return d
 
 
@@ -150,22 +157,14 @@ def _signed_area(loop: list[list[int]]) -> float:
     return s
 
 
-def trace_room_chains(grid: bytes, w: int, h: int) -> list[dict[str, Any]]:
-    """Trace exact room outlines from the labelled grid (row-major, w*h cells).
+def _chains_from_masks(masks: dict[int, set]) -> list[dict[str, Any]]:
+    """Trace each label's cell mask into its outer-boundary rings.
 
-    Follows what proven renderers (Valetudo) do: each room is a SOLID area,
-    obstacles are a separate layer drawn on top — never holes punched into the
-    fill. So we keep only the OUTER boundary of each room component and drop
-    interior holes (furniture/wall cells). Outline is exact (no smoothing); the
-    card fills it with no stroke, so the staircase is sub-pixel like the raw blob.
+    Split out of `trace_room_chains` so a parser whose grid uses a DIFFERENT
+    label alphabet can reuse the identical tracing, winding and ring-selection
+    rules — `extract_json_grid` keys its masks by real room id, which for the
+    xiaomi JSON family sits outside the ijai 10-59 band.
     """
-    masks: dict[int, set] = {}
-    for r in range(h):
-        base = r * w
-        for c in range(w):
-            lab = _label_of(grid[base + c])
-            if lab is not None:
-                masks.setdefault(lab, set()).add((c, r))
     chains: list[dict[str, Any]] = []
     for lab in sorted(masks):
         loops = _trace_mask(masks[lab])
@@ -182,6 +181,25 @@ def trace_room_chains(grid: bytes, w: int, h: int) -> list[dict[str, Any]]:
         if rings:
             chains.append({"id": lab, "rings": rings})
     return chains
+
+
+def trace_room_chains(grid: bytes, w: int, h: int) -> list[dict[str, Any]]:
+    """Trace exact room outlines from the labelled grid (row-major, w*h cells).
+
+    Follows what proven renderers (Valetudo) do: each room is a SOLID area,
+    obstacles are a separate layer drawn on top — never holes punched into the
+    fill. So we keep only the OUTER boundary of each room component and drop
+    interior holes (furniture/wall cells). Outline is exact (no smoothing); the
+    card fills it with no stroke, so the staircase is sub-pixel like the raw blob.
+    """
+    masks: dict[int, set] = {}
+    for r in range(h):
+        base = r * w
+        for c in range(w):
+            lab = _label_of(grid[base + c])
+            if lab is not None:
+                masks.setdefault(lab, set()).add((c, r))
+    return _chains_from_masks(masks)
 
 
 def extract_grid(unpacked: bytes) -> dict[str, Any]:
@@ -250,39 +268,168 @@ def _empty_grid() -> dict[str, Any]:
     }
 
 
-def vector_map(md: Any, unpacked: bytes, *, ijai_grid: bool = True) -> dict[str, Any]:
+# --- xiaomi JSON-map grid -------------------------------------------------
+# The JSON-map family (ov71gl, ov81gl, d109gl, ...) ships the same kind of
+# labelled occupancy grid as ijai, only packed differently: `map_data` is
+# base64 + zlib over ONE BYTE PER CELL, row-major, row 0 == origin_y — north
+# increases with the row index, exactly the convention `extract_grid`
+# documents, so traced chains land in the same space the card expects.
+# Cell alphabet (vacuum_map_parser_xiaomi `_normalize_json_map_pixels`):
+# 0 = unknown/outside, 1-2 = free floor, 3-63 = room grid_id, >63 = wall.
+JSON_ROOM_MIN, JSON_ROOM_MAX = 3, 63
+
+
+def extract_json_grid(payload: Any, *, units_per_metre: float = 1.0) -> dict[str, Any]:
+    """Trace room contours from a decrypted xiaomi JSON map payload.
+
+    `payload` is the JSON string `MapFetcher._unpack` returns for this brand
+    (or an already-parsed dict). Returns the same key shape as `extract_grid`.
+
+    Chain vertices are grid-line (col, row) pairs, which the card turns into
+    metres as `minX + col * resolution` — so `bounds` and `resolution` are
+    converted to metres here with the SAME `units_per_metre` divisor the
+    overlays use (this parser reports both in millimetres).
+
+    Rooms are keyed by the user-facing room id, not the raw cell value, so a
+    chain id matches `md.rooms` / the `clean_segment` segment id.
+
+    `grid_rle` + `size` are emitted ONLY when every room label also falls in
+    the card's room band (ROOM_MIN..ROOM_MAX). The card reads raster cells
+    with that band hard-coded and then looks the label up in the `rooms` list
+    by id; a grid whose labels are real room ids OUTSIDE the band would paint
+    a fully transparent raster OVER the traced fills and hide every room. On
+    ov71gl the room ids are 3-7, so it takes the chains-only path and the card
+    draws the traced polygons directly. `map_id` deliberately stays None: the
+    coordinator trusts a blob-embedded id as ground truth when resolving which
+    physical map a cycle belongs to, and that guarantee is ijai-only.
+    """
+    out = _empty_grid()
+    try:
+        data = (json.loads(payload)
+                if isinstance(payload, (str, bytes, bytearray)) else payload)
+    except ValueError as ex:
+        _LOGGER.debug("xiaomi JSON grid: payload is not valid JSON (%s)", ex)
+        return out
+    if not isinstance(data, dict):
+        _LOGGER.debug("xiaomi JSON grid: payload is %s, not an object", type(data).__name__)
+        return out
+
+    width, height, encoded = data.get("width"), data.get("height"), data.get("map_data")
+    if not width or not height or not encoded:
+        _LOGGER.debug("xiaomi JSON grid: payload carries no map_data/width/height")
+        return out
+    try:
+        w, h = int(width), int(height)
+        cells = zlib.decompress(base64.b64decode(encoded))
+    except Exception as ex:  # noqa: BLE001
+        _LOGGER.debug("xiaomi JSON grid: map_data is not base64+zlib (%s)", ex)
+        return out
+    if len(cells) < w * h:
+        _LOGGER.debug("xiaomi JSON grid: %d cells for a %dx%d map", len(cells), w, h)
+        return out
+
+    # grid_id -> user-facing room id. With no mapping the grid_id IS the room
+    # id, the same fallback vacuum_map_parser_xiaomi applies.
+    grid_to_room: dict[int, int] = {}
+    for entry in data.get("map_room_info") or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            grid_to_room[int(entry["grid_id"])] = int(entry["room_id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    masks: dict[int, set] = {}
+    for r in range(h):
+        base = r * w
+        for c in range(w):
+            v = cells[base + c]
+            if JSON_ROOM_MIN <= v <= JSON_ROOM_MAX:
+                masks.setdefault(grid_to_room.get(v, v), set()).add((c, r))
+    if not masks:
+        _LOGGER.debug("xiaomi JSON grid: no labelled room cells in a %dx%d map", w, h)
+        return out
+
+    res = float(data.get("resolution", 50)) / units_per_metre
+    min_x = float(data.get("origin_x", 0)) / units_per_metre
+    min_y = float(data.get("origin_y", 0)) / units_per_metre
+    out["bounds"] = {"minX": min_x, "minY": min_y,
+                     "maxX": min_x + w * res, "maxY": min_y + h * res}
+    out["resolution"] = res
+    out["room_chains"] = _chains_from_masks(masks)
+
+    if all(ROOM_MIN <= lab <= ROOM_MAX for lab in masks):
+        # Room ids double as valid card room-band values here, so the raster
+        # grid is safe to ship too: relabel the JSON alphabet to the legend.
+        norm = bytearray(w * h)
+        for i in range(w * h):
+            v = cells[i]
+            if v in (1, 2):
+                norm[i] = v                                 # floor / new area
+            elif JSON_ROOM_MIN <= v <= JSON_ROOM_MAX:
+                norm[i] = grid_to_room.get(v, v)
+            elif v:
+                norm[i] = 255                               # wall
+        out["size"] = {"x": w, "y": h}
+        out["grid_rle"] = _rle(bytes(norm))
+    return out
+
+
+def vector_map(md: Any, unpacked: bytes, *, ijai_grid: bool = True,
+               json_grid: bool = False, units_per_metre: float = 1.0) -> dict[str, Any]:
     """Assemble the card contract: grid (this module) + vector overlays (md).
 
-    `md` is the parsed vacuum_map_parser_base.MapData. All overlay coords are in
-    metres. `ijai_grid` is True only when `unpacked` is an ijai `RobotMap`
-    protobuf (the sole source of the crisp labelled grid); other brands pass
-    False and get the overlays-only contract.
+    `md` is the parsed vacuum_map_parser_base.MapData. All overlay coords are
+    emitted in metres. `ijai_grid` is True only when `unpacked` is an ijai
+    `RobotMap` protobuf; `json_grid` is True only for the xiaomi JSON-map
+    family, whose decrypted payload carries its own labelled pixel grid
+    (`extract_json_grid`). Both yield room contours; a brand with neither
+    passes False for both and gets the overlays-only contract.
+
+    `units_per_metre` is the divisor turning this brand's parser units into
+    metres -- see `map_parsers.overlay_units_per_metre`. It is 1.0 for every
+    brand that already reports metres and 1000.0 for the xiaomi JSON-map
+    family, whose parser reports millimetres. Without it the card, which draws
+    in metre space with absolute label and marker sizes, renders those 1000x
+    too small to see.
     """
-    out = extract_grid(unpacked) if ijai_grid else _empty_grid()
+    if ijai_grid:
+        out = extract_grid(unpacked)
+    elif json_grid:
+        out = extract_json_grid(unpacked, units_per_metre=units_per_metre)
+    else:
+        out = _empty_grid()
+
+    def to_m(value: Any) -> Any:
+        """Parser unit -> metre. Passes None through: `Room.pos_x`/`pos_y` are
+        optional (`float | None`) and stay absent rather than becoming 0.0."""
+        return value if value is None else value / units_per_metre
 
     if md.path is not None:
-        out["path"] = [[p.x, p.y] for sub in md.path.path for p in sub]
+        out["path"] = [[to_m(p.x), to_m(p.y)] for sub in md.path.path for p in sub]
     if md.charger is not None:
-        out["charger"] = _pt(md.charger)
+        out["charger"] = _pt(md.charger, to_m)
     if md.vacuum_position is not None:
-        out["vacuum"] = _pt(md.vacuum_position)
+        out["vacuum"] = _pt(md.vacuum_position, to_m)
     if md.goto is not None:
-        out["goto"] = _pt(md.goto)
+        out["goto"] = _pt(md.goto, to_m)
 
     out["rooms"] = [
         {
             "id": rid,
             "name": r.name,
-            "cx": r.pos_x,
-            "cy": r.pos_y,
-            "bbox": [r.x0, r.y0, r.x1, r.y1],
+            "cx": to_m(r.pos_x),
+            "cy": to_m(r.pos_y),
+            "bbox": [to_m(r.x0), to_m(r.y0), to_m(r.x1), to_m(r.y1)],
         }
         for rid, r in (md.rooms or {}).items()
     ]
-    out["walls"] = [[w.x0, w.y0, w.x1, w.y1] for w in (md.walls or [])]
-    out["no_go"] = [a.as_list() for a in (md.no_go_areas or [])]
-    out["no_mop"] = [a.as_list() for a in (md.no_mopping_areas or [])]
-    out["zones"] = [[z.x0, z.y0, z.x1, z.y1] for z in (md.zones or [])]
+    out["walls"] = [[to_m(w.x0), to_m(w.y0), to_m(w.x1), to_m(w.y1)]
+                    for w in (md.walls or [])]
+    out["no_go"] = [[to_m(v) for v in a.as_list()] for a in (md.no_go_areas or [])]
+    out["no_mop"] = [[to_m(v) for v in a.as_list()] for a in (md.no_mopping_areas or [])]
+    out["zones"] = [[to_m(z.x0), to_m(z.y0), to_m(z.x1), to_m(z.y1)]
+                    for z in (md.zones or [])]
     out["vacuum_room"] = md.vacuum_room
     out["vacuum_room_name"] = md.vacuum_room_name
     return out
