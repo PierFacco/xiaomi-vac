@@ -10,14 +10,23 @@ import pytest
 import spec.types as spec_types
 from spec.profiles.ijai import IJAI_V17
 from spec.registry import MODEL_PROFILES
-from tools.specs import generate_runtime_specs, promote_profiles
+
+try:
+    from tools.specs import generate_runtime_specs, promote_profiles
+except ModuleNotFoundError:
+    generate_runtime_specs = None
+    promote_profiles = None
 
 _BRANDS = ("dreame", "ijai", "roidmi", "viomi", "xiaomi")
 _PROMOTED_BRANDS = ("dreame", "viomi")
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DRAFTS = _REPO_ROOT / "custom_components" / "xiaomi_vac" / "spec" / "profiles" / "_drafts"
 _REVIEWED = _REPO_ROOT / "custom_components" / "xiaomi_vac" / "spec" / "profiles"
-_HAS_SPEC_LIBRARY = any(generate_runtime_specs.LIBRARY_DIR.glob("*.json"))
+_HAS_DRAFTS = all((_DRAFTS / f"{brand}.py").is_file() for brand in _BRANDS)
+_HAS_SPEC_LIBRARY = (
+    generate_runtime_specs is not None
+    and any(generate_runtime_specs.LIBRARY_DIR.glob("*.json"))
+)
 
 
 def _normalize(text: str) -> str:
@@ -25,6 +34,7 @@ def _normalize(text: str) -> str:
 
 
 @pytest.mark.parametrize("brand", _BRANDS)
+@pytest.mark.skipif(generate_runtime_specs is None, reason="private generator tools unavailable")
 def test_generator_recreates_committed_draft_modules(tmp_path, brand: str) -> None:
     if not _HAS_SPEC_LIBRARY:
         pytest.skip("raw MIoT spec library is not present in this checkout")
@@ -38,6 +48,7 @@ def test_generator_recreates_committed_draft_modules(tmp_path, brand: str) -> No
 
 
 @pytest.mark.parametrize("brand", _PROMOTED_BRANDS)
+@pytest.mark.skipif(promote_profiles is None, reason="private generator tools unavailable")
 def test_promoter_recreates_reviewed_modules(brand: str) -> None:
     module, registry = promote_profiles.promote(brand)
     reviewed = (_REVIEWED / f"{brand}.py").read_text(encoding="utf-8")
@@ -54,6 +65,7 @@ def _load_draft_profiles(brand: str):
     return scope["DRAFT_PROFILES"]
 
 
+@pytest.mark.skipif(not _HAS_DRAFTS, reason="private generated drafts unavailable")
 def test_registry_profiles_are_value_equal_to_generated_drafts() -> None:
     drafts = {}
     for brand in _BRANDS:

@@ -53,6 +53,8 @@ _STATUS = VacuumStatus(
     side_brush_life=90,
     filter_life=90,
     mop_life=None,
+    dust_bag_life=None,
+    detergent_life=None,
     clean_area=0,
     clean_time=0,
 )
