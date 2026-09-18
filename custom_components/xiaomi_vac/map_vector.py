@@ -331,7 +331,11 @@ def extract_json_grid(payload: Any, *, units_per_metre: float = 1.0) -> dict[str
     # grid_id -> user-facing room id. With no mapping the grid_id IS the room
     # id, the same fallback vacuum_map_parser_xiaomi applies.
     grid_to_room: dict[int, int] = {}
-    for entry in data.get("map_room_info") or []:
+    room_info = data.get("map_room_info") or []
+    if not isinstance(room_info, list):
+        _LOGGER.debug("xiaomi JSON grid: map_room_info is not a list")
+        room_info = []
+    for entry in room_info:
         if not isinstance(entry, dict):
             continue
         try:
@@ -350,9 +354,13 @@ def extract_json_grid(payload: Any, *, units_per_metre: float = 1.0) -> dict[str
         _LOGGER.debug("xiaomi JSON grid: no labelled room cells in a %dx%d map", w, h)
         return out
 
-    res = float(data.get("resolution", 50)) / units_per_metre
-    min_x = float(data.get("origin_x", 0)) / units_per_metre
-    min_y = float(data.get("origin_y", 0)) / units_per_metre
+    try:
+        res = float(data.get("resolution", 50)) / units_per_metre
+        min_x = float(data.get("origin_x", 0)) / units_per_metre
+        min_y = float(data.get("origin_y", 0)) / units_per_metre
+    except (TypeError, ValueError, ZeroDivisionError) as ex:
+        _LOGGER.debug("xiaomi JSON grid: invalid geometry metadata (%s)", ex)
+        return _empty_grid()
     out["bounds"] = {"minX": min_x, "minY": min_y,
                      "maxX": min_x + w * res, "maxY": min_y + h * res}
     out["resolution"] = res
@@ -376,7 +384,10 @@ def extract_json_grid(payload: Any, *, units_per_metre: float = 1.0) -> dict[str
 
 
 def vector_map(md: Any, unpacked: bytes, *, ijai_grid: bool = True,
-               json_grid: bool = False, units_per_metre: float = 1.0) -> dict[str, Any]:
+               json_grid: bool = False, units_per_metre: float = 1.0,
+               carpets: list[list[float]] | None = None,
+               path_segments: list[list[tuple[float, float]]] | None = None,
+               ) -> dict[str, Any]:
     """Assemble the card contract: grid (this module) + vector overlays (md).
 
     `md` is the parsed vacuum_map_parser_base.MapData. All overlay coords are
@@ -407,6 +418,18 @@ def vector_map(md: Any, unpacked: bytes, *, ijai_grid: bool = True,
 
     if md.path is not None:
         out["path"] = [[to_m(p.x), to_m(p.y)] for sub in md.path.path for p in sub]
+    if path_segments:
+        out["path_segments"] = [
+            [[to_m(x), to_m(y)] for x, y in segment]
+            for segment in path_segments
+            if len(segment) >= 2
+        ]
+    if carpets:
+        out["carpets"] = [
+            [to_m(value) for value in carpet]
+            for carpet in carpets
+            if len(carpet) == 8
+        ]
     if md.charger is not None:
         out["charger"] = _pt(md.charger, to_m)
     if md.vacuum_position is not None:

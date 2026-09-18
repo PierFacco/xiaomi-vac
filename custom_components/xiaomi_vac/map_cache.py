@@ -22,11 +22,10 @@ _LOGGER = logging.getLogger(__name__)
 # v2 (map units): overlay coords for the xiaomi JSON-map family are emitted in
 # metres, not millimetres -- entries written by <=1.2.5 hold the old units and
 # must not be served alongside freshly decoded ones.
-# v3 (room contours): the xiaomi JSON-map family now carries `room_chains` +
-# `bounds` + `resolution` traced from the payload's pixel grid. A v2 entry holds
-# the bbox-only vector, and `async_upsert` is a no-op while the blob's
-# content_hash is unchanged -- so without this bump the stale contour-less
-# vector keeps being served from disk after the upgrade.
+# v3 (room contours and overlays): the xiaomi JSON-map family now carries
+# `room_chains`, geometry, carpets, and segmented travelled paths. A v2 entry
+# holds the old vector, and `async_upsert` is a no-op while the blob's
+# content_hash is unchanged -- so without this bump stale data survives upgrade.
 STORAGE_VERSION = 3
 # HA's own Store file-format version, deliberately pinned. Raising it would make
 # Store.async_load hit its migration path and raise NotImplementedError, which

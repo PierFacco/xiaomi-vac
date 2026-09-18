@@ -716,9 +716,21 @@ class XiaomiVacCard extends HTMLElement {
     (m.walls || []).forEach((w) => {
       s += `<line x1="${tx(w[0])}" y1="${ty(w[1])}" x2="${tx(w[2])}" y2="${ty(w[3])}" stroke="var(--xv-muted)" stroke-width="0.05" stroke-linecap="round" stroke-dasharray="0.16 0.13" opacity=".35"/>`;
     });
-    if (m.path && m.path.length > 1) {
+    if (Array.isArray(m.path_segments)) {
+      m.path_segments.forEach((segment) => {
+        if (Array.isArray(segment) && segment.length > 1) {
+          s += `<polyline points="${segment.map(([x, y]) => `${tx(x)},${ty(y)}`).join(" ")}" fill="none" stroke="var(--xv-accent)" stroke-width="0.07" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>`;
+        }
+      });
+    } else if (Array.isArray(m.path) && m.path.length > 1) {
       s += `<polyline points="${m.path.map(([x, y]) => `${tx(x)},${ty(y)}`).join(" ")}" fill="none" stroke="var(--xv-accent)" stroke-width="0.07" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>`;
     }
+    (m.carpets || []).forEach((carpet) => {
+      if (!Array.isArray(carpet) || carpet.length !== 8) return;
+      const points = [[carpet[0], carpet[1]], [carpet[2], carpet[3]],
+        [carpet[4], carpet[5]], [carpet[6], carpet[7]]];
+      s += `<path d="${ring(points)}" fill="#d2aa5a" fill-opacity="0.28" stroke="#d2aa5a" stroke-opacity="0.55" stroke-width="0.03"/>`;
+    });
     if (this._enabled("show_room_labels")) rooms.forEach((r) => {
       if (r.cx == null || !r.name) return;
       // Full name, uppercased. Let it overflow the room rather than truncate —

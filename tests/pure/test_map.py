@@ -329,6 +329,17 @@ def test_extract_json_grid_falls_back_to_the_empty_contract(payload):
     assert out["bounds"] is None
 
 
+def test_extract_json_grid_invalid_geometry_falls_back_to_the_empty_contract():
+    payload = json.loads(_json_payload(_JSON_ROWS))
+    payload["resolution"] = "invalid"
+    payload["map_room_info"] = {"not": "a list"}
+
+    out = map_vector.extract_json_grid(payload, units_per_metre=1000.0)
+
+    assert out["room_chains"] == []
+    assert out["bounds"] is None
+
+
 def test_vector_map_xiaomi_json_grid_has_room_chains():
     """The ov71gl path: contours from the payload grid, overlays still metres."""
     out = map_vector.vector_map(

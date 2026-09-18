@@ -26,6 +26,7 @@ from .map_parsers import (
     overlay_units_per_metre,
     unpack_kwargs,
 )
+from .xiaomi_map_overlays import draw_overlays, parse_carpets, parse_path
 
 # MIoT property that carries `<object_path>,<enckey>` for cloud-encrypted dreame maps.
 # Verified against Tasshack's dreame-vacuum 2026-07-03 (siid=6/piid=3 = OBJECT_NAME).
@@ -223,12 +224,16 @@ class MapFetcher:
                 self._enckey_polled = False
             _LOGGER.debug("Could not decrypt map at slot %s: %s", slot, ex)
             return None
+        carpets = parse_carpets(unpacked) if self._brand == "xiaomi" else []
+        path_segments = parse_path(unpacked) if self._brand == "xiaomi" else []
         try:
             md = self._parser.parse(unpacked)
             vector = map_vector.vector_map(
                 md, unpacked, ijai_grid=self._ijai_grid,
                 json_grid=self._json_grid,
                 units_per_metre=self._overlay_units,
+                carpets=carpets,
+                path_segments=path_segments,
             )
         except Exception as ex:  # noqa: BLE001
             # Decrypted fine but the parser rejected the frame (corrupt or
@@ -240,12 +245,15 @@ class MapFetcher:
             return None
 
         cropped, off_x, off_y = _autocrop(md.image.data)
+        calibration = md.calibration() or []
+        cropped = draw_overlays(
+            cropped, carpets, path_segments, calibration, off_x, off_y
+        )
         buf = io.BytesIO()
         cropped.save(buf, format="PNG")
 
         # Shift calibration map-pixels by the cropped-away margin so the card
         # overlay still maps vacuum coordinates to the right place.
-        calibration = md.calibration() or []
         for cp in calibration:
             cp["map"]["x"] -= off_x
             cp["map"]["y"] -= off_y
