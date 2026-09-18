@@ -24,8 +24,8 @@ def test_registry_counts_match_card_baseline() -> None:
     rejected = [model for model in MODEL_PROFILES if not is_supported(model)]
 
     assert len(MODEL_PROFILES) == 95
-    assert len(supported) == 74
-    assert len(rejected) == 21
+    assert len(supported) == 76
+    assert len(rejected) == 19
 
 
 def test_distinct_core_count_matches_promoted_profiles() -> None:

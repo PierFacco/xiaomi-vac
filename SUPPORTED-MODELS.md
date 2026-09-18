@@ -4,7 +4,7 @@ This list is generated from the integration code, using models where
 `custom_components/xiaomi_vac/spec/registry.py:is_supported(model)` returns
 `True`.
 
-Total supported models: 73
+Total supported models: 76
 
 ## Dreame
 
@@ -50,9 +50,11 @@ Total supported models: 73
 - `ijai.vacuum.v1`
 - `ijai.vacuum.v2`
 - `ijai.vacuum.v3`
+- `ijai.vacuum.v10`
 - `ijai.vacuum.v13`
 - `ijai.vacuum.v14`
 - `ijai.vacuum.v15`
+- `ijai.vacuum.v16`
 - `ijai.vacuum.v17`
 - `ijai.vacuum.v18`
 - `ijai.vacuum.v19`
