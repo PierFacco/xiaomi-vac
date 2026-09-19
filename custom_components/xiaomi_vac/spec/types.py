@@ -135,6 +135,10 @@ class ConsumablesCapability:
     main_brush_hours: Prop | None = None
     hypa_hours: Prop | None = None
     mop_hours: Prop | None = None
+    side_brush_life: Prop | None = None
+    main_brush_life: Prop | None = None
+    hypa_life: Prop | None = None
+    mop_life: Prop | None = None
     door_state: Prop | None = None
     cloth_state: Prop | None = None
     reset_consumable: Action | None = None
@@ -236,6 +240,32 @@ class DreameConsumablesCapability:
     dust_bag_life: Prop | None = None
     dust_bag_left_time: Prop | None = None
     reset_dust_bag: Action | None = None
+
+
+_CONSUMABLE_LIFE_KEYS = (
+    "main_brush_life",
+    "side_brush_life",
+    "filter_life",
+    "mop_life",
+    "dust_bag_life",
+    "detergent_life",
+)
+
+
+def consumable_life_props(
+    consumables: ConsumablesCapability | DreameConsumablesCapability | None,
+) -> dict[str, Prop | None]:
+    """Return consumable percentage props keyed by sensor name."""
+    if isinstance(consumables, DreameConsumablesCapability):
+        return {key: getattr(consumables, key) for key in _CONSUMABLE_LIFE_KEYS}
+    if isinstance(consumables, ConsumablesCapability):
+        return {
+            "main_brush_life": consumables.main_brush_life,
+            "side_brush_life": consumables.side_brush_life,
+            "filter_life": consumables.hypa_life,
+            "mop_life": consumables.mop_life,
+        }
+    return {}
 
 
 @dataclass(frozen=True)

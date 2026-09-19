@@ -20,10 +20,12 @@ from . import XiaomiConfigEntry
 from .const import DOMAIN
 from .coordinator import XiaomiVacuumCoordinator
 from .device import VacuumStatus
-from .spec.types import DreameConsumablesCapability, ModelProfile
+from .spec.types import ModelProfile, consumable_life_props
 
 # Read-only platform fed by the coordinator; no device writes to serialise.
 PARALLEL_UPDATES = 0
+
+DOOR_STATES = {0: "none", 1: "dust_box", 2: "water_box", 3: "two_in_one"}
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -35,11 +37,15 @@ class XiaomiSensorDescription(SensorEntityDescription):
 
 
 def _has_consumable(attr: str) -> Callable[[ModelProfile], bool]:
-    """supported_fn factory: True when profile.consumables is the
-    percent+hours-shaped DreameConsumablesCapability AND has `attr` set."""
-    return lambda p: (
-        isinstance(p.consumables, DreameConsumablesCapability)
-        and getattr(p.consumables, attr) is not None
+    """Return a Model Profile consumable predicate."""
+    return lambda p: consumable_life_props(p.consumables).get(attr) is not None
+
+
+def _has_door_state(profile: ModelProfile) -> bool:
+    """Return whether the Model Profile exposes verified door state."""
+    return (
+        profile.profile_id == "ijai.v17"
+        and getattr(profile.consumables, "door_state", None) is not None
     )
 
 
@@ -59,6 +65,14 @@ _ALL_SENSORS: tuple[XiaomiSensorDescription, ...] = (
         device_class=SensorDeviceClass.BATTERY, native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT, value_fn=lambda s: s.battery,
         supported_fn=lambda p: p.core is not None and p.core.battery is not None,
+    ),
+    XiaomiSensorDescription(
+        key="door_state", translation_key="door_state", icon="mdi:cube-outline",
+        device_class=SensorDeviceClass.ENUM,
+        options=["none", "dust_box", "water_box", "two_in_one"],
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda s: DOOR_STATES.get(s.door_state_raw),
+        supported_fn=_has_door_state,
     ),
     XiaomiSensorDescription(
         key="main_brush_life", translation_key="main_brush_life", icon="mdi:broom",
