@@ -45,6 +45,7 @@ _STATUS = VacuumStatus(
     repeat_raw=None,
     alarm_raw=None,
     volume_raw=None,
+    door_state_raw=None,
     main_brush_life=100,
     side_brush_life=100,
     filter_life=100,

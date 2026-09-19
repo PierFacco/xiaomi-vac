@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from miio import MiotDevice
 
 from .spec.registry import card_baseline_gaps, get_profile
-from .spec.types import CoreCapability, DreameConsumablesCapability, MapCapability, ModelProfile
+from .spec.types import CoreCapability, MapCapability, ModelProfile, consumable_life_props
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class VacuumStatus:
     repeat_raw: int | None
     alarm_raw: int | None
     volume_raw: int | None
+    door_state_raw: int | None
     main_brush_life: int | None
     side_brush_life: int | None
     filter_life: int | None
@@ -118,29 +119,19 @@ class IjaiVacuumDevice:
     # --- telemetry -------------------------------------------------------
     def status(self) -> VacuumStatus:
         c = self.core
-        # Lean core (decision 2026-06-25): clean-area/time are still NOT in
-        # core, parked -> always None below. Consumable life (2026-08-01):
-        # populated when profile.consumables is the percent+hours-shaped
-        # DreameConsumablesCapability (life-level props only here — the
-        # left-time/hours props exist on the profile but aren't polled, no
-        # consumer needs them yet).
         cons = self.profile.consumables
-        cons_props: dict[str, "object"] = {}
-        if isinstance(cons, DreameConsumablesCapability):
-            cons_props = {
-                "main_brush_life": cons.main_brush_life,
-                "side_brush_life": cons.side_brush_life,
-                "filter_life": cons.filter_life,
-                "mop_life": cons.mop_life,
-                "dust_bag_life": cons.dust_bag_life,
-                "detergent_life": cons.detergent_life,
-            }
+        life_props = consumable_life_props(cons)
+        door_state = (
+            getattr(cons, "door_state", None)
+            if self.profile.profile_id == "ijai.v17"
+            else None
+        )
         # Batch all non-None props in one get_properties call (chunked when
         # profile.max_properties is set — e.g. IJAI_CORE_LEGACY devices).
         poll = [p for p in (
             c.status, c.battery, c.fault, c.fan_speed, c.water_level,
             c.mode, c.sweep_type, c.repeat, c.alarm, c.volume,
-            *cons_props.values(),
+            *life_props.values(), door_state,
         ) if p is not None]
         vals = self._batch_get(poll)
         _raw = vals.get(c.status)
@@ -163,12 +154,13 @@ class IjaiVacuumDevice:
             repeat_raw=_as_int(vals.get(c.repeat)),
             alarm_raw=_as_int(vals.get(c.alarm)),
             volume_raw=_as_int(vals.get(c.volume)),
-            main_brush_life=_as_int(vals.get(cons_props.get("main_brush_life"))),
-            side_brush_life=_as_int(vals.get(cons_props.get("side_brush_life"))),
-            filter_life=_as_int(vals.get(cons_props.get("filter_life"))),
-            mop_life=_as_int(vals.get(cons_props.get("mop_life"))),
-            dust_bag_life=_as_int(vals.get(cons_props.get("dust_bag_life"))),
-            detergent_life=_as_int(vals.get(cons_props.get("detergent_life"))),
+            door_state_raw=_as_int(vals.get(door_state)),
+            main_brush_life=_as_int(vals.get(life_props.get("main_brush_life"))),
+            side_brush_life=_as_int(vals.get(life_props.get("side_brush_life"))),
+            filter_life=_as_int(vals.get(life_props.get("filter_life"))),
+            mop_life=_as_int(vals.get(life_props.get("mop_life"))),
+            dust_bag_life=_as_int(vals.get(life_props.get("dust_bag_life"))),
+            detergent_life=_as_int(vals.get(life_props.get("detergent_life"))),
             clean_area=None,
             clean_time=None,
         )

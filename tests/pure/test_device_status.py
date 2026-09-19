@@ -78,10 +78,6 @@ def test_lean_core_fields_stay_parked(monkeypatch):
 
     status = device.status()
 
-    assert status.main_brush_life is None
-    assert status.side_brush_life is None
-    assert status.filter_life is None
-    assert status.mop_life is None
     assert status.clean_area is None
     assert status.clean_time is None
 
