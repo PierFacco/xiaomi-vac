@@ -65,6 +65,16 @@ _ALL_SENSORS: tuple[XiaomiSensorDescription, ...] = (
         # status is always populated (required prop, raises on failure)
     ),
     XiaomiSensorDescription(
+        # translated firmware-enum device state (issue #1); only for cores
+        # that carry the status-label table
+        key="device_state", translation_key="device_state",
+        device_class=SensorDeviceClass.ENUM,
+        options=["sleep", "idle", "paused", "returning", "charging", "cleaning", "mopping",
+                 "upgrading", "mop_cleaning", "mop_air_drying", "unknown"],
+        value_fn=lambda s: s.status,
+        supported_fn=lambda p: p.core is not None and bool(p.core.status_labels),
+    ),
+    XiaomiSensorDescription(
         key="battery", translation_key="battery",
         device_class=SensorDeviceClass.BATTERY, native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT, value_fn=lambda s: s.battery,

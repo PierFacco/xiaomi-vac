@@ -60,8 +60,9 @@ def test_build_sensors_ijai_v17_no_dead_sensors(monkeypatch):
 
 
 def test_build_sensors_ijai_v17_exact_set(monkeypatch):
-    """The v17-family sensor set: status + battery + the four consumable
-    life-levels (2026-09-17) + the door/box state (Vaschetta)."""
+    """The v17-family sensor set: status + battery + the translated
+    device-state label (issue #1) + the four consumable life-levels
+    (2026-09-17) + the door/box state (Vaschetta)."""
     sensor = load_sensor_module(monkeypatch)
     profile = _ijai_v17_profile(monkeypatch)
 
@@ -69,7 +70,7 @@ def test_build_sensors_ijai_v17_exact_set(monkeypatch):
     keys = {d.key for d in sensors}
 
     assert keys == {
-        "status", "battery", "door_state",
+        "status", "battery", "device_state", "door_state",
         "main_brush_life", "side_brush_life", "filter_life", "mop_life",
     }
 
@@ -88,4 +89,21 @@ def test_build_sensors_profile_without_battery_omits_battery(monkeypatch):
     keys = {d.key for d in sensors}
 
     assert "battery" not in keys
+    assert "status" in keys
+
+
+def test_build_sensors_profile_without_status_labels_omits_device_state(monkeypatch):
+    """A core without the status-label table must not get a device_state
+    sensor (models without the table get no entity, issue #1)."""
+    from dataclasses import replace
+
+    sensor = load_sensor_module(monkeypatch)
+    profile = _ijai_v17_profile(monkeypatch)
+    labelless_core = replace(profile.core, status_labels={})
+    labelless_profile = replace(profile, core=labelless_core)
+
+    sensors = sensor.build_sensors(labelless_profile)
+    keys = {d.key for d in sensors}
+
+    assert "device_state" not in keys
     assert "status" in keys

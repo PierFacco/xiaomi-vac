@@ -110,11 +110,33 @@ class XiaomiVacuum(CoordinatorEntity[XiaomiVacuumCoordinator], StateVacuumEntity
 
     @property
     def extra_state_attributes(self) -> dict:
-        return {"fault": self.coordinator.data.fault, "model": self._device.model}
+        # Raw fault stays authoritative (issue #2); fault_text/relocating are
+        # the translated views consumers (card, automations) can key on.
+        return {
+            "fault": self.coordinator.data.fault,
+            "fault_text": self.coordinator.data.fault_text,
+            "relocating": self.coordinator.data.relocating,
+            "model": self._device.model,
+        }
+
+    def _request_map_upload(self) -> None:
+        """Fire-and-forget a fresh map upload after a clean starts (issue #3).
+
+        The vendor app has the robot upload a new map right after a clean
+        begins; mirror that so the card goes live sooner. The throttle (30 s
+        per map id), active-map-id resolution and the device action all live
+        in XiaomiMapCoordinator.async_request_map_upload — dispatching through
+        it never moves the robot and can never storm the device.
+        """
+        data = getattr(self._entry, "runtime_data", None)
+        map_coord = getattr(data, "map", None) if data is not None else None
+        if map_coord is not None:
+            self.hass.async_create_task(map_coord.async_request_map_upload())
 
     async def async_start(self) -> None:
         await self.hass.async_add_executor_job(self._device.start)
         await self.coordinator.async_request_refresh()
+        self._request_map_upload()
 
     async def async_stop(self, **kwargs) -> None:
         await self.hass.async_add_executor_job(self._device.stop)
@@ -151,6 +173,7 @@ class XiaomiVacuum(CoordinatorEntity[XiaomiVacuumCoordinator], StateVacuumEntity
                 )
                 _LOGGER.debug("%s: room-clean served via cloud", self._device.model)
                 await self.coordinator.async_request_refresh()
+                self._request_map_upload()
                 return
             except Exception as cloud_err:  # noqa: BLE001
                 _LOGGER.warning(
@@ -165,6 +188,7 @@ class XiaomiVacuum(CoordinatorEntity[XiaomiVacuumCoordinator], StateVacuumEntity
         except Exception as err:  # noqa: BLE001
             raise HomeAssistantError(f"Room cleaning failed: {err}") from err
         await self.coordinator.async_request_refresh()
+        self._request_map_upload()
 
     async def async_clean_zone(self, zone: list[float]) -> None:
         """Clean a rectangular area (zone) given as [x0, y0, x1, y1] in the
@@ -178,6 +202,7 @@ class XiaomiVacuum(CoordinatorEntity[XiaomiVacuumCoordinator], StateVacuumEntity
                 )
                 _LOGGER.debug("%s: zone-clean served via cloud", self._device.model)
                 await self.coordinator.async_request_refresh()
+                self._request_map_upload()
                 return
             except Exception as cloud_err:  # noqa: BLE001
                 _LOGGER.warning(
@@ -193,6 +218,7 @@ class XiaomiVacuum(CoordinatorEntity[XiaomiVacuumCoordinator], StateVacuumEntity
         except Exception as err:  # noqa: BLE001
             raise HomeAssistantError(f"Zone cleaning failed: {err}") from err
         await self.coordinator.async_request_refresh()
+        self._request_map_upload()
 
 
 def _has_cloud_session(data: dict) -> bool:

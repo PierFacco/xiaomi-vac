@@ -378,6 +378,7 @@ class CoreCapability:
     locate: Action | None = None
     # value tables (empty = entity not built for this model)
     status_map: dict[int, str] = field(default_factory=dict)   # raw int -> HA activity
+    status_labels: dict[int, str] = field(default_factory=dict)  # raw int -> device-state label
     fan_speeds: dict[str, int] = field(default_factory=dict)    # label -> raw
     water_levels: dict[str, int] = field(default_factory=dict)
     modes: dict[str, int] = field(default_factory=dict)

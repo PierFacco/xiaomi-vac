@@ -31,7 +31,10 @@ def test_registry_counts_match_card_baseline() -> None:
 def test_distinct_core_count_matches_promoted_profiles() -> None:
     cores = {repr(profile.core) for profile in MODEL_PROFILES.values() if profile.core}
 
-    assert len(cores) == 23
+    # 24 since issue #1: IJAI_CORE_STD (raw 9/10 + the status-label table) is
+    # now genuinely distinct from viomi v45's core, which previously matched
+    # it field-for-field and counted as one.
+    assert len(cores) == 24
 
 
 def test_registered_profiles_include_spec_notes() -> None:

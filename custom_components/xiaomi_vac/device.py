@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from miio import MiotDevice
 
+from .faults import fault_text, is_relocating
 from .spec.registry import card_baseline_gaps, get_profile
 from .spec.types import CoreCapability, MapCapability, ModelProfile, consumable_life_props
 
@@ -50,6 +51,14 @@ class VacuumStatus:
     detergent_life: int | None
     clean_area: int | None
     clean_time: int | None
+    # Translated device-state label (firmware status enum, issue #1); defaults
+    # to "unknown" so keyword constructions elsewhere keep working.
+    status: str = "unknown"
+    # Fault translation (issue #2): the raw ``fault`` stays authoritative; the
+    # vendor-app label and the relocating flag are derived views of it. Both
+    # default so existing keyword constructions keep working.
+    fault_text: str | None = None
+    relocating: bool = False
 
 
 class IjaiVacuumDevice:
@@ -145,11 +154,21 @@ class IjaiVacuumDevice:
                 f"Required property {c.status.siid}/{c.status.piid} read failed: "
                 f"returned {_raw!r}"
             ) from ex
+        activity = c.status_map.get(raw, "idle")
+        # Translated device-state label: prefer the firmware-enum table when
+        # the profile has one (issue #1); fall back to the collapsed activity
+        # for profiles without labels or unmapped raw values.
+        label = c.status_labels.get(raw, activity) if c.status_labels else activity
+        # Raw fault read once; the translated label and the relocating flag
+        # derive from it (issue #2) — fault itself stays the raw integer.
+        fault = _as_int(vals.get(c.fault))
         return VacuumStatus(
-            activity=c.status_map.get(raw, "idle"),
+            activity=activity,
             raw_status=raw,
             battery=_as_int(vals.get(c.battery)),
-            fault=_as_int(vals.get(c.fault)),
+            fault=fault,
+            fault_text=fault_text(fault),
+            relocating=is_relocating(fault),
             fan_speed_raw=_as_int(vals.get(c.fan_speed)),
             water_level_raw=_as_int(vals.get(c.water_level)),
             mode_raw=_as_int(vals.get(c.mode)),
@@ -166,6 +185,7 @@ class IjaiVacuumDevice:
             detergent_life=_as_int(vals.get(life.get("detergent_life"))),
             clean_area=None,
             clean_time=None,
+            status=label,
         )
 
     # --- control ---------------------------------------------------------

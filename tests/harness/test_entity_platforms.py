@@ -1,6 +1,7 @@
 """Harness tests: entity construction, feature flags, command dispatch."""
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -95,6 +96,10 @@ def _make_entry(unique_id: str = "AA:BB:CC:DD:EE:FF") -> MagicMock:
     entry.entry_id = "test_entry_id"
     entry.title = "Test Vacuum"
     entry.runtime_data = MagicMock()
+    # Map coordinator is optional at runtime; default to a mock with an
+    # awaitable upload request so fire-and-forget tasks get a real coroutine.
+    entry.runtime_data.map = MagicMock()
+    entry.runtime_data.map.async_request_map_upload = AsyncMock()
     return entry
 
 
@@ -150,6 +155,28 @@ def test_vacuum_locate_absent_when_neither_locate_nor_alarm() -> None:
     entry = _make_entry()
     vac = XiaomiVacuum(coord, entry)
     assert not (vac.supported_features & VacuumEntityFeature.LOCATE)
+
+
+# ---------------------------------------------------------------------------
+# Vacuum extra_state_attributes: fault translation (issue #2)
+# ---------------------------------------------------------------------------
+
+
+def test_vacuum_extra_state_attributes_expose_fault_translation() -> None:
+    """Raw fault rides along with fault_text and the relocating flag."""
+    coord = _make_coordinator()
+    coord.data = replace(
+        _STATUS, fault=2108, fault_text="Repositioning…", relocating=True
+    )
+    entry = _make_entry()
+    vac = XiaomiVacuum(coord, entry)
+
+    attrs = vac.extra_state_attributes
+
+    assert attrs["fault"] == 2108
+    assert attrs["fault_text"] == "Repositioning…"
+    assert attrs["relocating"] is True
+    assert attrs["model"] == "dreame.vacuum.p2008"
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +443,80 @@ async def test_vacuum_clean_segment_does_not_cloud_retry_other_failures(
 
     cloud_cls.assert_not_called()
     coord.async_request_refresh.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Command dispatch: map upload after start/segment/zone clean (issue #3)
+# ---------------------------------------------------------------------------
+
+
+async def test_vacuum_start_requests_map_upload(hass: HomeAssistant) -> None:
+    """Start dispatches one fire-and-forget map upload via the coordinator."""
+    coord = _make_coordinator()
+    coord.async_request_refresh = AsyncMock()
+    entry = _make_entry()
+    vac = XiaomiVacuum(coord, entry)
+    vac.hass = hass
+
+    await vac.async_start()
+    await hass.async_block_till_done()
+
+    entry.runtime_data.map.async_request_map_upload.assert_awaited_once()
+
+
+async def test_vacuum_start_without_map_coordinator_does_not_raise(
+    hass: HomeAssistant,
+) -> None:
+    """No map coordinator (map=None) must be a silent no-op, not an error."""
+    coord = _make_coordinator()
+    coord.async_request_refresh = AsyncMock()
+    entry = _make_entry()
+    entry.runtime_data.map = None
+    vac = XiaomiVacuum(coord, entry)
+    vac.hass = hass
+
+    await vac.async_start()
+    await hass.async_block_till_done()
+
+    coord.device.start.assert_called_once()
+
+
+async def test_vacuum_clean_segment_requests_map_upload(
+    hass: HomeAssistant,
+) -> None:
+    """Local room-clean asks the map coordinator for one upload; robot not moved."""
+    coord = _make_coordinator()
+    coord.async_request_refresh = AsyncMock()
+    entry = _make_entry()
+    entry.data = {}
+    vac = XiaomiVacuum(coord, entry)
+    vac.hass = hass
+
+    with patch("custom_components.xiaomi_vac.vacuum.XiaomiCloud") as cloud_cls:
+        await vac.async_clean_segment(segments=[1, 2])
+    await hass.async_block_till_done()
+
+    cloud_cls.assert_not_called()
+    entry.runtime_data.map.async_request_map_upload.assert_awaited_once()
+    coord.device.start.assert_not_called()
+
+
+async def test_vacuum_clean_zone_requests_map_upload(hass: HomeAssistant) -> None:
+    """Local zone-clean asks the map coordinator for one upload; robot not moved."""
+    coord = _make_coordinator()
+    coord.async_request_refresh = AsyncMock()
+    entry = _make_entry()
+    entry.data = {}
+    vac = XiaomiVacuum(coord, entry)
+    vac.hass = hass
+
+    with patch("custom_components.xiaomi_vac.vacuum.XiaomiCloud") as cloud_cls:
+        await vac.async_clean_zone(zone=[1.0, 2.0, 3.0, 4.0])
+    await hass.async_block_till_done()
+
+    cloud_cls.assert_not_called()
+    entry.runtime_data.map.async_request_map_upload.assert_awaited_once()
+    coord.device.start.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

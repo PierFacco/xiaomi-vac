@@ -167,6 +167,22 @@
           "error": "Error"
         }
       },
+      "device_state": {
+        "name": "Device state",
+        "state": {
+          "sleep": "Sleeping",
+          "idle": "Idle",
+          "paused": "Paused",
+          "returning": "Returning to dock",
+          "charging": "Charging",
+          "cleaning": "Cleaning",
+          "mopping": "Mopping",
+          "upgrading": "Upgrading",
+          "mop_cleaning": "Mop cleaning",
+          "mop_air_drying": "Mop air-drying",
+          "unknown": "Unknown"
+        }
+      },
       "battery": {
         "name": "Battery"
       },
